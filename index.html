@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101511">
+    <meta name="description" content="A private, on-demand YouTube summarizer running on a personal Windows PC.">
+    <title>YouTube Summary Desk</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="YouTube Summary Desk home">
+          <span class="brand-mark" aria-hidden="true">▶</span>
+          <span>PERSONAL TOOL <span class="brand-divider">/</span> VIDEO NOTES</span>
+        </a>
+        <a class="github-link" href="https://github.com/leweex95/youtubesum" target="_blank" rel="noreferrer">Project on GitHub <span aria-hidden="true">↗</span></a>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow"><span class="pulse" aria-hidden="true"></span> PRIVATE, ON-DEMAND SUMMARIES</p>
+        <h1 id="page-title">More signal.<br><span>Less video.</span></h1>
+        <p class="intro">Turn a YouTube video into a thoughtful summary, delivered to your inbox. Processing runs on my own Windows PC—not on this public website.</p>
+
+        <div class="request-card" aria-labelledby="request-title">
+          <div class="card-heading">
+            <div>
+              <p class="card-kicker">QUICK REQUEST</p>
+              <h2 id="request-title">Summarize a video</h2>
+            </div>
+            <span class="setup-badge"><span aria-hidden="true">●</span> SETUP IN PROGRESS</span>
+          </div>
+          <label for="video-url">YouTube video URL</label>
+          <div class="request-row">
+            <input id="video-url" type="url" placeholder="https://www.youtube.com/watch?v=…" disabled aria-describedby="setup-note">
+            <button type="button" disabled>Send for summary <span aria-hidden="true">→</span></button>
+          </div>
+          <p id="setup-note" class="setup-note">Requests will be enabled after the private runner and secure sign-in are ready.</p>
+        </div>
+
+        <div class="trust-row" aria-label="Service properties">
+          <div><span class="trust-icon" aria-hidden="true">⌂</span><span>Runs on a personal PC</span></div>
+          <div><span class="trust-icon" aria-hidden="true">✉</span><span>Summary sent by email</span></div>
+          <div><span class="trust-icon" aria-hidden="true">◷</span><span>PC must be online</span></div>
+        </div>
+      </section>
+
+      <section class="how" aria-labelledby="how-title">
+        <div class="section-intro">
+          <p class="eyebrow">A SMALL, PRIVATE WORKFLOW</p>
+          <h2 id="how-title">How it will work</h2>
+        </div>
+        <ol class="steps">
+          <li><span class="step-number">01</span><div><h3>Share one video</h3><p>Submit a public YouTube video link after signing in.</p></div></li>
+          <li><span class="step-number">02</span><div><h3>My PC does the work</h3><p>A private GitHub workflow hands the request to my online Windows PC.</p></div></li>
+          <li><span class="step-number">03</span><div><h3>Check your inbox</h3><p>The existing summarizer prepares the notes and emails the result.</p></div></li>
+        </ol>
+      </section>
+
+      <aside class="privacy-note">
+        <span class="privacy-icon" aria-hidden="true">◇</span>
+        <p><strong>Privacy by design.</strong> This static page does not process videos or store credentials. A secure sign-in bridge is being prepared; no GitHub token or private runner details are exposed here.</p>
+      </aside>
+
+      <footer>
+        <span>Built for occasional use. Not a durable queue.</span>
+        <a href="https://github.com/leweex95/youtubesum" target="_blank" rel="noreferrer">Source &amp; project details <span aria-hidden="true">↗</span></a>
+      </footer>
+    </main>
+  </body>
+</html>
