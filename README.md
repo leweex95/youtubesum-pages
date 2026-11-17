@@ -6,9 +6,13 @@ Public GitHub Pages landing page for the private YouTube summarizer. The site is
 
 The `Deploy GitHub Pages` workflow publishes the site from the `main` branch. In repository settings, set **Pages → Build and deployment → Source** to **GitHub Actions**. The first deployment runs on push to `main`.
 
-## Current status
+## Request flow
 
-The page is intentionally a public-facing preview: request fields are disabled until the private Windows runner is installed and tested and an authenticated server-side bridge is ready. Do not add a GitHub token or private runner details to this repository. The future page should send requests only to the authenticated bridge; it must never call the private repository with browser-held credentials.
+The page is a static frontend. Once configured, it signs the owner in with GitHub and submits one YouTube URL to the Cloudflare Worker in `worker/`. The Worker verifies the allow-listed GitHub account and uses a narrowly scoped GitHub App installation token to dispatch `workflow_dispatch` in the private processing repository. No GitHub access token, App private key, SMTP data, summaries, or transcripts are placed in this repository or returned to the browser. The browser receives only a short-lived, bridge-scoped session token held in memory.
+
+The form deliberately stays unavailable until `app.js` is configured with the deployed Worker URL and the complete authenticated dispatch flow is tested. See [`worker/SETUP.md`](worker/SETUP.md). Never place GitHub tokens, App private keys, Kaggle credentials, SMTP secrets, or private workflow results in this public repository.
+
+The Pages deployment uploads only `index.html`, `styles.css`, and `app.js`; Worker source and setup files are not published as site assets.
 
 ## Related private processing repository
 

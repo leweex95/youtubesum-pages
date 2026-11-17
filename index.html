@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101511">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://*.workers.dev; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
     <meta name="description" content="A private, on-demand YouTube summarizer running on a personal Windows PC.">
     <title>YouTube Summary Desk</title>
     <link rel="stylesheet" href="styles.css">
@@ -29,14 +31,20 @@
               <p class="card-kicker">QUICK REQUEST</p>
               <h2 id="request-title">Summarize a video</h2>
             </div>
-            <span class="setup-badge"><span aria-hidden="true">●</span> SETUP IN PROGRESS</span>
+            <span id="bridge-badge" class="setup-badge"><span aria-hidden="true">●</span> BRIDGE SETUP REQUIRED</span>
           </div>
-          <label for="video-url">YouTube video URL</label>
-          <div class="request-row">
-            <input id="video-url" type="url" placeholder="https://www.youtube.com/watch?v=…" disabled aria-describedby="setup-note">
-            <button type="button" disabled>Send for summary <span aria-hidden="true">→</span></button>
+          <div class="auth-row">
+            <button id="sign-in" type="button" disabled>Sign in with GitHub</button>
+            <button id="sign-out" class="secondary-button" type="button" hidden>Sign out</button>
           </div>
-          <p id="setup-note" class="setup-note">Requests will be enabled after the private runner and secure sign-in are ready.</p>
+          <form id="request-form">
+            <label for="video-url">YouTube video URL</label>
+            <div class="request-row">
+              <input id="video-url" name="youtube_url" type="url" inputmode="url" autocomplete="url" placeholder="https://www.youtube.com/watch?v=…" required disabled aria-describedby="setup-note">
+              <button id="submit-request" type="submit" disabled>Send for summary <span aria-hidden="true">→</span></button>
+            </div>
+          </form>
+          <p id="setup-note" class="setup-note" role="status" aria-live="polite">The authenticated bridge has not been configured yet.</p>
         </div>
 
         <div class="trust-row" aria-label="Service properties">
@@ -52,7 +60,7 @@
           <h2 id="how-title">How it will work</h2>
         </div>
         <ol class="steps">
-          <li><span class="step-number">01</span><div><h3>Share one video</h3><p>Submit a public YouTube video link after signing in.</p></div></li>
+          <li><span class="step-number">01</span><div><h3>Sign in and share</h3><p>Sign in with the owner’s GitHub account, then submit one public YouTube video link.</p></div></li>
           <li><span class="step-number">02</span><div><h3>My PC does the work</h3><p>A private GitHub workflow hands the request to my online Windows PC.</p></div></li>
           <li><span class="step-number">03</span><div><h3>Check your inbox</h3><p>The existing summarizer prepares the notes and emails the result.</p></div></li>
         </ol>
@@ -60,7 +68,7 @@
 
       <aside class="privacy-note">
         <span class="privacy-icon" aria-hidden="true">◇</span>
-        <p><strong>Privacy by design.</strong> This static page does not process videos or store credentials. A secure sign-in bridge is being prepared; no GitHub token or private runner details are exposed here.</p>
+        <p><strong>Privacy by design.</strong> The page is static. A server-side bridge verifies the owner’s GitHub sign-in and triggers the private workflow; GitHub credentials and processing results are never sent to this page. The Windows runner must be online; queued jobs are not durable and may expire after about 24 hours.</p>
       </aside>
 
       <footer>
@@ -68,5 +76,6 @@
         <a href="https://github.com/leweex95/youtubesum" target="_blank" rel="noreferrer">Source &amp; project details <span aria-hidden="true">↗</span></a>
       </footer>
     </main>
+    <script src="app.js" defer></script>
   </body>
 </html>

@@ -49,6 +49,8 @@ h1 span { color: var(--green); }
 .card-kicker { margin: 0 0 7px; color: var(--faint); font: 9px var(--mono); letter-spacing: .13em; }
 .card-heading h2, .section-intro h2 { margin: 0; font: 700 20px var(--display); letter-spacing: -.035em; }
 .setup-badge { margin-top: 2px; padding: 7px 9px; border: 1px solid #554b2d; border-radius: 5px; color: #d4bc7c; font: 9px var(--mono); letter-spacing: .05em; white-space: nowrap; }
+.setup-badge[data-state="ready"] { border-color: #36533a; color: var(--green); }
+.setup-badge[data-state="error"] { border-color: #654040; color: #f0aaaa; }
 .setup-badge span { padding-right: 4px; font-size: 7px; }
 label { display: block; margin: 0 0 8px; color: #c5cec6; font-size: 11px; font-weight: 600; }
 .request-row { display: flex; gap: 9px; }
@@ -57,8 +59,15 @@ input::placeholder { color: #68756b; }
 input:disabled { opacity: .72; }
 button { flex: 0 0 auto; height: 45px; padding: 0 15px; border: 1px solid #47614a; border-radius: 7px; background: #2a402d; color: #d0e9ce; font: 600 11px var(--sans); }
 button:disabled { cursor: not-allowed; opacity: .65; }
+button:not(:disabled) { cursor: pointer; }
+button:not(:disabled):hover { border-color: var(--green); }
 button span { padding-left: 8px; }
+.auth-row { display: flex; gap: 9px; margin: 0 0 18px; }
+.secondary-button { border-color: #3a463d; background: #202822; color: #bac5bb; }
 .setup-note { margin: 11px 0 0; color: #89968b; font-size: 11px; }
+.setup-note[data-state="error"] { color: #f0aaaa; }
+.setup-note[data-state="success"] { color: var(--green); }
+.setup-note a { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
 
 .trust-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 27px; margin-top: 28px; color: #a9b5ab; font-size: 11px; }
 .trust-row > div { display: flex; align-items: center; gap: 8px; }

@@ -1,0 +1,20 @@
+name = "youtubesum-submit"
+main = "src/index.js"
+compatibility_date = "2026-11-17"
+workers_dev = true
+
+[vars]
+PAGES_ORIGIN = "https://leweex95.github.io"
+PAGES_URL = "https://leweex95.github.io/youtubesum-pages/"
+ALLOWED_GITHUB_LOGIN = "leweex95"
+ALLOWED_GITHUB_USER_ID = "74991597"
+REPOSITORY_OWNER = "leweex95"
+REPOSITORY_NAME = "youtubesum"
+WORKFLOW_FILE = "summarize.yml"
+WORKFLOW_REF = "main"
+
+# Set these non-secret app identifiers after creating/installing the GitHub App.
+# Never put its client secret or private key in this file.
+GITHUB_APP_ID = "CONFIGURE_ME"
+GITHUB_APP_CLIENT_ID = "CONFIGURE_ME"
+GITHUB_APP_INSTALLATION_ID = "CONFIGURE_ME"
