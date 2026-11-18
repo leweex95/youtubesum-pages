@@ -51,6 +51,24 @@ test("health is public but returns no configuration details", async () => {
   assert.deepEqual(await response.json(), { ok: true });
 });
 
+test("private prompt catalogue and request status require an approved origin and bearer token", async () => {
+  const prompts = await handleRequest(new Request("https://bridge.workers.dev/api/prompts", {
+    headers: { Origin: baseEnv.PAGES_ORIGIN },
+  }), baseEnv);
+  assert.equal(prompts.status, 401);
+
+  const status = await handleRequest(new Request(
+    "https://bridge.workers.dev/api/status/0123456789abcdef0123456789abcdef",
+    { headers: { Origin: baseEnv.PAGES_ORIGIN } },
+  ), baseEnv);
+  assert.equal(status.status, 401);
+
+  const wrongOrigin = await handleRequest(new Request("https://bridge.workers.dev/api/prompts", {
+    headers: { Origin: "https://attacker.example", Authorization: "Bearer invalid" },
+  }), baseEnv);
+  assert.equal(wrongOrigin.status, 401);
+});
+
 test("CORS preflight permits only the Pages origin and dispatch headers", async () => {
   const approved = await handleRequest(new Request("https://bridge.workers.dev/api/dispatch", {
     method: "OPTIONS",
@@ -63,6 +81,16 @@ test("CORS preflight permits only the Pages origin and dispatch headers", async 
   assert.equal(approved.status, 204);
   assert.equal(approved.headers.get("Access-Control-Allow-Origin"), baseEnv.PAGES_ORIGIN);
   assert.equal(approved.headers.get("Access-Control-Allow-Credentials"), null);
+
+  const statusOptions = await handleRequest(new Request("https://bridge.workers.dev/api/status/0123456789abcdef0123456789abcdef", {
+    method: "OPTIONS",
+    headers: {
+      Origin: baseEnv.PAGES_ORIGIN,
+      "Access-Control-Request-Method": "GET",
+      "Access-Control-Request-Headers": "authorization",
+    },
+  }), baseEnv);
+  assert.equal(statusOptions.status, 204);
 
   const denied = await handleRequest(new Request("https://bridge.workers.dev/api/dispatch", {
     method: "OPTIONS",
@@ -221,6 +249,27 @@ test("deployed placeholder Worker refuses dispatch until secrets are configured"
   assert.deepEqual(await response.json(), { ok: false, error: "bridge_not_configured" });
 });
 
+test("owner dispatch rejects unsupported modes, formats, and prompt overrides", async () => {
+  const env = { ...baseEnv, GITHUB_APP_PRIVATE_KEY: "not-used-by-invalid-request" };
+  const session = await createSessionToken("leweex95", "74991597", env);
+  for (const body of [
+    { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", mode: "untrusted" },
+    { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", formats: ["detailed"] },
+    { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", prompt_overrides: { concise: "missing placeholders" } },
+  ]) {
+    const response = await handleRequest(new Request("https://bridge.workers.dev/api/dispatch", {
+      method: "POST",
+      headers: {
+        Origin: env.PAGES_ORIGIN,
+        Authorization: `Bearer ${session.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }), env);
+    assert.equal(response.status, 400);
+  }
+});
+
 test("owner dispatch uses a short-lived session and a narrowly scoped installation token", async () => {
   const generated = await crypto.subtle.generateKey(
     { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: Uint8Array.of(1, 0, 1), hash: "SHA-256" },
@@ -236,6 +285,14 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
   };
   const session = await createSessionToken("leweex95", "74991597", env);
   const calls = [];
+  const commitStatuses = [];
+  const sha = "a".repeat(40);
+  const runRecord = {
+    display_title: "YouTube summary request 0123456789abcdef0123456789abcdef",
+    head_sha: sha,
+    status: "in_progress",
+    updated_at: "2026-11-18T12:00:00Z",
+  };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
@@ -245,6 +302,22 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
     }
     if (url.endsWith("/actions/workflows/summarize.yml/dispatches")) {
       return new Response(null, { status: 204 });
+    }
+    if (url.includes("/contents/prompts/")) {
+      return Response.json({
+        encoding: "base64",
+        content: Buffer.from("Template {transcript} {output_language}").toString("base64"),
+      });
+    }
+    if (url.endsWith("/actions/runs/123")) return Response.json(runRecord);
+    if (url.includes("/actions/workflows/summarize.yml/runs?")) return Response.json({ workflow_runs: [runRecord] });
+    if (url.endsWith(`/statuses/${sha}`) || url.includes(`/commits/${sha}/statuses`)) {
+      if (init.method === "POST") {
+        const status = JSON.parse(init.body);
+        commitStatuses.unshift({ ...status, updated_at: "2026-11-18T12:01:00Z" });
+        return Response.json(status, { status: 201 });
+      }
+      return Response.json(commitStatuses);
     }
     throw new Error("unexpected upstream request");
   };
@@ -257,14 +330,23 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
         Authorization: `Bearer ${session.token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ youtube_url: "https://youtu.be/jNQXAC9IVRw?si=private-tracker" }),
+      body: JSON.stringify({
+        youtube_url: "https://youtu.be/jNQXAC9IVRw?si=private-tracker",
+        request_id: "0123456789abcdef0123456789abcdef",
+        mode: "chunked",
+        formats: ["concise", "detailed"],
+        prompt_overrides: { concise: "Summary in {output_language}: {transcript}" },
+      }),
     });
     const response = await handleRequest(request, env);
     assert.equal(response.status, 202);
-    assert.deepEqual(await response.json(), {
+    const result = await response.json();
+    assert.deepEqual({ ok: result.ok, request_id: result.request_id, actions_url: result.actions_url }, {
       ok: true,
+      request_id: "0123456789abcdef0123456789abcdef",
       actions_url: "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml",
     });
+    assert.match(result.status_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     assert.equal(calls.length, 2);
     assert.match(calls[0].url, /\/app\/installations\/67890\/access_tokens$/);
     assert.match(calls[1].url, /\/repos\/leweex95\/youtubesum\/actions\/workflows\/summarize\.yml\/dispatches$/);
@@ -272,10 +354,64 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
       repositories: ["youtubesum"],
       permissions: { actions: "write" },
     });
-    assert.deepEqual(JSON.parse(calls[1].init.body), {
-      ref: "main",
-      inputs: { youtube_url: "https://www.youtube.com/watch?v=jNQXAC9IVRw" },
+    const dispatch = JSON.parse(calls[1].init.body);
+    assert.equal(dispatch.ref, "main");
+    assert.equal(dispatch.inputs.youtube_url, "https://www.youtube.com/watch?v=jNQXAC9IVRw");
+    assert.equal(dispatch.inputs.request_id, "0123456789abcdef0123456789abcdef");
+    assert.match(dispatch.inputs.status_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.equal(dispatch.inputs.summary_mode, "chunked");
+    assert.equal(dispatch.inputs.summary_formats, "concise,detailed");
+    assert.deepEqual(JSON.parse(dispatch.inputs.prompt_overrides), {
+      concise: "Summary in {output_language}: {transcript}",
     });
+
+    const progress = await handleRequest(new Request("https://bridge.workers.dev/api/progress", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${dispatch.inputs.status_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        request_id: "0123456789abcdef0123456789abcdef",
+        run_id: "123",
+        state: "summary_ready",
+      }),
+    }), env);
+    assert.equal(progress.status, 202);
+    assert.deepEqual(commitStatuses[0], {
+      state: "pending",
+      context: "youtubesum/request/0123456789abcdef0123456789abcdef",
+      description: "Summary generated",
+      target_url: "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml",
+      updated_at: "2026-11-18T12:01:00Z",
+    });
+
+    const status = await handleRequest(new Request(
+      "https://bridge.workers.dev/api/status/0123456789abcdef0123456789abcdef",
+      { headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${result.status_token}` } },
+    ), env);
+    const statusResult = await status.json();
+    assert.equal(status.status, 200);
+    assert.equal(statusResult.state, "running");
+    assert.equal(statusResult.message, "Summary generated");
+    assert.deepEqual(statusResult.events.map((event) => event.message), ["Summary generated"]);
+
+    const catalogResponse = await handleRequest(new Request("https://bridge.workers.dev/api/prompts", {
+      headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${session.token}` },
+    }), env);
+    const catalog = await catalogResponse.json();
+    assert.equal(catalogResponse.status, 200);
+    assert.equal(Object.keys(catalog.prompts).length, 7);
+    assert.equal(catalog.prompts["system:final_synthesis.md"], "Template {transcript} {output_language}");
+    const tokenPermissions = calls
+      .filter((call) => call.url.endsWith("/access_tokens"))
+      .map((call) => JSON.parse(call.init.body).permissions);
+    assert.deepEqual(tokenPermissions, [
+      { actions: "write" },
+      { actions: "read", statuses: "write" },
+      { actions: "read", statuses: "read" },
+      { contents: "read" },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

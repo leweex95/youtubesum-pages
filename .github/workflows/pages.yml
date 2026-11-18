@@ -30,13 +30,14 @@ jobs:
       - name: Test request page and bridge
         run: |
           node --check app.js
+          node --test tests/site.test.js
           npm --prefix worker test
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Prepare static site artifact
         run: |
           mkdir -p dist
-          cp index.html styles.css app.js dist/
+          cp index.html how-it-works.html styles.css app.js dist/
       - name: Upload site
         uses: actions/upload-pages-artifact@v3
         with:

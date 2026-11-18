@@ -1,6 +1,6 @@
 # Configure the authenticated submission bridge
 
-The Pages site is static and cannot safely hold a credential for the private repository. This Cloudflare Worker verifies the owner's GitHub sign-in, then uses a short-lived GitHub App installation token server-side to dispatch only `summarize.yml` in `leweex95/youtubesum`. It does not accept arbitrary recipients, return job output, or store request URLs. The GitHub OAuth token used to identify the owner is discarded after the account check. The browser receives only a 10-minute bridge session token, held in memory and limited to this dispatch endpoint.
+The Pages site is static and cannot safely hold a credential for the private repository. This Cloudflare Worker verifies the owner's GitHub sign-in, then uses short-lived GitHub App installation tokens server-side to dispatch only `summarize.yml` in `leweex95/youtubesum`, read the seven explicitly allowlisted prompt templates, and publish/read request-scoped commit-status milestones. The Worker does not accept arbitrary recipients or return job output. The canonical URL is passed to the private workflow but is not retained by the Worker. The GitHub OAuth token used to identify the owner is discarded after the account check.
 
 The Worker source is public in this repository. Keep all private keys and client secrets in Cloudflare Worker secrets. Never add them to GitHub Pages, this repository, browser JavaScript, or Actions logs.
 
@@ -30,7 +30,7 @@ Create an app under the owner's GitHub account in **Settings → Developer setti
 - User authorization callback URL: `<Worker URL>/auth/callback`.
 - Enable the user-authorization flow so the Worker can verify the signed-in owner.
 - Account permissions: **Profile: Read-only**, so the Worker can verify the GitHub numeric user ID and login.
-- Repository permissions: **Actions: Read and write**. Leave other permissions at their minimum/default; GitHub's required Metadata read permission is fine.
+- Repository permissions: **Actions: Read and write**, **Contents: Read-only**, and **Commit statuses: Read and write**. Leave other permissions at their minimum/default; GitHub's required Metadata read permission is fine. Update the App installation after changing permissions.
 - Subscribe to no webhook events.
 - Install it only on the private `leweex95/youtubesum` repository.
 
@@ -57,7 +57,7 @@ Paste the GitHub App Client Secret, the full PEM private key, and the generated 
 npx wrangler@4 deploy
 ```
 
-The Worker URL is public configuration, not a secret. Add it as `BRIDGE_URL` in `app.js`, without a trailing slash. Run the Worker tests and review the public Pages diff before pushing. The Pages deployment workflow publishes only `index.html`, `styles.css`, and `app.js`; it does not publish Worker source or setup notes as site assets.
+The Worker URL is public configuration, not a secret. It may be added to `BRIDGE_URL` for owner sign-in verification while `SUBMISSIONS_ENABLED` remains `false`. Run the site and Worker tests and review the public Pages diff before pushing. The Pages deployment workflow publishes `index.html`, `how-it-works.html`, `styles.css`, and `app.js`; it does not publish Worker source or setup notes as site assets.
 
 Also narrow the `connect-src` entry in the Content-Security-Policy meta tag in `index.html` from `https://*.workers.dev` to the exact Worker origin.
 
@@ -65,19 +65,21 @@ Also narrow the `connect-src` entry in the Content-Security-Policy meta tag in `
 
 1. Run `node --test worker/test/index.test.js` and `node --check app.js`.
 2. Check `https://<worker-host>/health`; it should return only `{"ok":true}`.
-3. Push the Pages changes and confirm the Pages deployment succeeds.
+3. Grant/update the GitHub App permissions above, deploy the Worker, configure `BRIDGE_URL`, and push the Pages changes. Keep `SUBMISSIONS_ENABLED` false until the private processing and email flow passes end-to-end verification.
 4. In a private browser session, verify a non-owner GitHub account is denied. Do not enter or log any GitHub token in the page.
-5. Sign in as `leweex95`, submit one test video with captions, and verify the Worker accepts only that URL and GitHub dispatches the private workflow.
-6. Verify the Windows runner has Kaggle credentials, processing completes, and the owner receives the MP3 attachment. Confirm the public page shows only that the request was accepted and a link to the private Actions page—not the video URL, summary, transcript, logs, or credentials.
+5. Sign in as `leweex95` and verify prompt catalog and status access. Do not enable submission until you have approved a test request and full processing-to-email checks can be performed.
+6. Verify the Windows runner has Kaggle credentials, processing completes, and the owner receives the MP3 attachment. Confirm the page shows only coarse milestones (runner, summary, narration, email) and a link to private Actions—not the video URL, summary, transcript, logs, or credentials.
 7. Test invalid URLs, playlist links, expired sessions, and a request from an unapproved account; none should dispatch a workflow.
 
-Keep `BRIDGE_URL` empty and the form disabled until all steps above pass. The private Actions form remains available as a fallback. A queued run is not durable: the Windows PC must be online, and an offline runner's queued job may expire after about 24 hours.
+Keep `SUBMISSIONS_ENABLED` false until all end-to-end steps above pass. The private Actions form remains available as a fallback. A queued run is not durable: the Windows PC must be online, and an offline runner's queued job may expire after about 24 hours.
 
 ## Security notes
 
 - GitHub OAuth happens in a popup. The Worker checks both the GitHub numeric user ID and login against `worker/wrangler.toml`; the GitHub OAuth access token never reaches the browser. The browser receives a short-lived, dispatch-only bridge session token; if popup messaging is unavailable, it is handed off in a URL fragment that `app.js` immediately removes. URL fragments are not sent to the site server or in referrers.
-- The bridge session is HMAC-signed, expires after 10 minutes, and is held in page memory only. Refreshing the page requires sign-in again.
+- The bridge session is HMAC-signed, expires after 10 minutes, and is held in page memory only. Refreshing the page requires sign-in again. A separate request-scoped, read-only status token expires after 48 hours and is also held only in memory; the private workflow receives a distinct progress-only token.
 - The Worker accepts POSTs only from the exact Pages origin, validates/canonicalizes one YouTube video URL, and strips query parameters before dispatch.
-- Each dispatch receives a fresh installation token scoped to the private `youtubesum` repository and Actions write permission. It is never returned to the page.
+- Each Worker GitHub API operation receives a fresh installation token scoped to the private `youtubesum` repository and the minimum operation permissions. Installation tokens and workflow progress tokens are never returned to the page.
+- The prompt catalogue endpoint requires an owner session and reads only the seven allowlisted prompt files. Prompt edits are validated, passed only to that private run, and do not modify repository files.
+- Progress is limited to fixed milestone descriptions stored as private-repository commit statuses. No user URL, prompt text, transcript, summary, email address, or log content is included in those statuses.
 - The Worker has no endpoint for logs, artifacts, transcripts, summaries, SMTP configuration, or runner details.
 - Keep the public repository's workflows limited to Pages deployment from trusted `main`; do not add pull-request jobs that receive Cloudflare deployment secrets.

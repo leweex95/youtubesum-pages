@@ -2,7 +2,26 @@ const encoder = new TextEncoder();
 const GITHUB_API = "https://api.github.com";
 const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
 const SESSION_SECONDS = 10 * 60;
-const MAX_BODY_BYTES = 4096;
+const MAX_BODY_BYTES = 24 * 1024;
+const PROMPT_FILES = Object.freeze({
+  concise: "prompts/concise.md",
+  detailed: "prompts/detailed.md",
+  key_takeaways: "prompts/key_takeaways.md",
+  critical: "prompts/critical_analysis.md",
+  "system:chunk_summary.md": "prompts/chunk_summary.md",
+  "system:chunk_reduction.md": "prompts/chunk_reduction.md",
+  "system:final_synthesis.md": "prompts/final_synthesis.md",
+});
+const PROGRESS_STATES = Object.freeze({
+  runner_started: ["pending", "Windows runner started"],
+  processing: ["pending", "Processing video"],
+  summary_ready: ["pending", "Summary generated"],
+  audio_ready: ["pending", "MP3 narration generated"],
+  email_sending: ["pending", "Sending email"],
+  email_sent: ["pending", "Email sent (SMTP accepted)"],
+  email_failed: ["failure", "Email delivery failed"],
+  failed: ["failure", "Processing failed"],
+});
 
 export default {
   async fetch(request, env) {
@@ -34,8 +53,28 @@ export async function handleRequest(request, env) {
     return preflight(request, env);
   }
 
+  if ((url.pathname === "/api/prompts" || url.pathname === "/api/status" || url.pathname.startsWith("/api/status/")) && request.method === "OPTIONS") {
+    return preflight(request, env);
+  }
+
+  if (url.pathname === "/api/prompts" && request.method === "GET") {
+    return getPrompts(request, env);
+  }
+
+  if (url.pathname === "/api/status" && request.method === "GET") {
+    return getStatus(request, env);
+  }
+
+  if (url.pathname.startsWith("/api/status/") && request.method === "GET") {
+    return getStatus(request, env, url.pathname.slice("/api/status/".length));
+  }
+
   if (url.pathname === "/api/dispatch" && request.method === "POST") {
     return dispatchWorkflow(request, env);
+  }
+
+  if (url.pathname === "/api/progress" && request.method === "POST") {
+    return receiveProgress(request, env);
   }
 
   return jsonResponse({ ok: false, error: "not_found" }, 404, request, env);
@@ -200,37 +239,291 @@ async function dispatchWorkflow(request, env) {
     return jsonResponse({ ok: false, error: "invalid_youtube_url" }, 400, request, env);
   }
 
+  const requestId = body.request_id;
+  if (typeof requestId !== "string" || !/^[a-f0-9]{32}$/.test(requestId)) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  const mode = body.mode ?? "auto";
+  if (!["auto", "single", "chunked"].includes(mode)) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  const formats = body.formats ?? ["concise"];
+  if (!Array.isArray(formats) || !formats.length || formats.length > 4 ||
+      formats.some((name) => typeof name !== "string" || name.startsWith("system:") || !Object.hasOwn(PROMPT_FILES, name)) ||
+      new Set(formats).size !== formats.length || !formats.includes("concise")) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  const promptOverrides = body.prompt_overrides ?? {};
+  if (!promptOverrides || typeof promptOverrides !== "object" || Array.isArray(promptOverrides) ||
+      Object.keys(promptOverrides).length > 7 ||
+      Object.entries(promptOverrides).some(([name, value]) =>
+        (!formats.includes(name) && !(name.startsWith("system:") && mode !== "single" && Object.hasOwn(PROMPT_FILES, name))) ||
+        typeof value !== "string" || !isValidPromptTemplate(value)) ||
+      JSON.stringify(promptOverrides).length > 20_000) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+
   const installationToken = await createInstallationToken(env);
+  const progressToken = await createProgressToken(requestId, env);
   const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
   const dispatchResponse = await fetch(`${GITHUB_API}/repos/${repo}/actions/workflows/${encodeURIComponent(env.WORKFLOW_FILE)}/dispatches`, {
     method: "POST",
     headers: githubHeaders(installationToken),
     body: JSON.stringify({
       ref: env.WORKFLOW_REF,
-      inputs: { youtube_url: youtubeUrl },
+      inputs: {
+        youtube_url: youtubeUrl,
+        request_id: requestId,
+        status_token: progressToken,
+        summary_mode: mode,
+        summary_formats: formats.join(","),
+        prompt_overrides: JSON.stringify(promptOverrides),
+      },
     }),
   });
   if (dispatchResponse.status !== 204) {
     return jsonResponse({ ok: false, error: "workflow_dispatch_failed" }, 502, request, env);
   }
 
-  return jsonResponse({ ok: true, actions_url: OWNER_ACTIONS_URL }, 202, request, env);
+  const statusReadToken = await createStatusReadToken(requestId, env);
+  return jsonResponse({ ok: true, request_id: requestId, status_token: statusReadToken, actions_url: OWNER_ACTIONS_URL }, 202, request, env);
 }
 
-async function createInstallationToken(env) {
+function isValidPromptTemplate(template) {
+  if (!template.trim() || template.length > 6_000) return false;
+  const normalized = template.replaceAll("{{", "").replaceAll("}}", "");
+  const fields = [...normalized.matchAll(/\{([^{}]*)\}/g)].map((match) => match[1]);
+  const remainder = normalized.replace(/\{([^{}]*)\}/g, "");
+  const allowed = new Set([
+    "video_title", "channel", "video_url", "transcript_language",
+    "output_language", "transcript", "source_context",
+  ]);
+  return !/[{}]/.test(remainder) && fields.every((field) => allowed.has(field)) &&
+    fields.includes("transcript") && fields.includes("output_language");
+}
+
+async function createInstallationToken(env, permissions = { actions: "write" }) {
   const appJwt = await createGitHubAppJwt(env);
   const response = await fetch(`${GITHUB_API}/app/installations/${encodeURIComponent(env.GITHUB_APP_INSTALLATION_ID)}/access_tokens`, {
     method: "POST",
     headers: githubHeaders(appJwt),
     body: JSON.stringify({
       repositories: [env.REPOSITORY_NAME],
-      permissions: { actions: "write" },
+      permissions,
     }),
   });
   if (!response.ok) throw new Error("installation_token_failed");
   const result = await response.json().catch(() => ({}));
   if (typeof result.token !== "string" || !result.token) throw new Error("installation_token_failed");
   return result.token;
+}
+
+async function getPrompts(request, env) {
+  if (!isAllowedPagesOrigin(request, env) || !(await hasOwnerSession(request, env))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  const token = await createInstallationToken(env, { contents: "read" });
+  const prompts = {};
+  for (const [name, path] of Object.entries(PROMPT_FILES)) {
+    prompts[name] = await readRepositoryText(path, token, env);
+  }
+  return jsonResponse({ ok: true, prompts }, 200, request, env);
+}
+
+async function readRepositoryText(path, token, env) {
+  const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
+  const url = new URL(`${GITHUB_API}/repos/${repo}/contents/${path}`);
+  url.searchParams.set("ref", env.WORKFLOW_REF);
+  const response = await fetch(url, { headers: githubHeaders(token) });
+  if (!response.ok) throw new Error("prompt_catalog_unavailable");
+  const item = await response.json().catch(() => ({}));
+  if (item.encoding !== "base64" || typeof item.content !== "string") {
+    throw new Error("prompt_catalog_unavailable");
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(decodeBase64(item.content.replace(/\s/g, "")));
+  if (!text.trim() || text.length > 20_000) throw new Error("prompt_catalog_unavailable");
+  return text;
+}
+
+async function getStatus(request, env, requestId = "") {
+  const bearer = /^Bearer ([A-Za-z0-9_.-]{20,4096})$/.exec(request.headers.get("Authorization") || "");
+  const sessionValid = bearer && await verifySessionToken(bearer[1], env);
+  const statusValid = bearer && await verifyStatusReadToken(bearer[1], requestId, env);
+  if (!isAllowedPagesOrigin(request, env) || !(sessionValid || statusValid)) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  if (!/^[a-f0-9]{32}$/.test(requestId)) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  const token = await createInstallationToken(env, { actions: "read", statuses: "read" });
+  const run = await findRun(requestId, token, env);
+  if (!run) {
+    return jsonResponse({ ok: true, request_id: requestId, state: "queued", message: "Request accepted; waiting for GitHub Actions." }, 200, request, env);
+  }
+  const statusUrl = `${GITHUB_API}/repos/${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}/commits/${encodeURIComponent(run.head_sha)}/statuses?per_page=100`;
+  const response = await fetch(statusUrl, { headers: githubHeaders(token) });
+  if (!response.ok) throw new Error("status_unavailable");
+  const statuses = await response.json().catch(() => []);
+  const latest = Array.isArray(statuses)
+    ? statuses.find((item) => item.context === `youtubesum/request/${requestId}`)
+    : null;
+  const events = Array.isArray(statuses)
+    ? statuses.filter((item) => item.context === `youtubesum/request/${requestId}`)
+      .reverse()
+      .map((item) => ({
+        state: item.description === "Email sent (SMTP accepted)" ? "success" : item.state,
+        message: safeProgressMessage(item.description, item.state),
+        updated_at: item.updated_at,
+      }))
+    : [];
+  let state = "queued";
+  let message = "Request accepted; waiting for the Windows runner.";
+  if (latest) {
+    state = latest.state === "success" ? "complete" : latest.state === "failure" || latest.state === "error" ? "failed" : "running";
+    message = safeProgressMessage(latest.description, state);
+  } else if (run.status === "in_progress") {
+    state = "running";
+    message = "The Windows runner is online and processing the request.";
+  }
+  if (run.status === "completed" && run.conclusion !== "success") {
+    state = "failed";
+    message = "The private workflow failed before completion. Check private Actions for details.";
+  } else if (run.status === "completed" && run.conclusion === "success" && state !== "complete") {
+    state = "complete";
+    message = "Processing completed successfully.";
+  }
+  return jsonResponse({
+    ok: true,
+    request_id: requestId,
+    state,
+    message,
+    events,
+    actions_url: OWNER_ACTIONS_URL,
+    updated_at: latest?.updated_at || run.updated_at || run.created_at,
+  }, 200, request, env);
+}
+
+async function findRun(requestId, token, env) {
+  const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
+  const url = new URL(`${GITHUB_API}/repos/${repo}/actions/workflows/${encodeURIComponent(env.WORKFLOW_FILE)}/runs`);
+  url.searchParams.set("event", "workflow_dispatch");
+  url.searchParams.set("per_page", "50");
+  const response = await fetch(url, { headers: githubHeaders(token) });
+  if (!response.ok) throw new Error("workflow_status_unavailable");
+  const result = await response.json().catch(() => ({}));
+  const title = `YouTube summary request ${requestId}`;
+  return (result.workflow_runs || []).find((run) => run.display_title === title) || null;
+}
+
+async function receiveProgress(request, env) {
+  let body;
+  try {
+    body = await readJsonLimited(request);
+  } catch {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  const authorization = request.headers.get("Authorization") || "";
+  const match = /^Bearer ([A-Za-z0-9_.-]{20,4096})$/.exec(authorization);
+  if (!match || !(await verifyProgressToken(match[1], body.request_id, env)) ||
+      !/^[a-f0-9]{32}$/.test(body.request_id || "") || !/^\d+$/.test(String(body.run_id || "")) ||
+      !Object.hasOwn(PROGRESS_STATES, body.state)) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  const token = await createInstallationToken(env, { actions: "read", statuses: "write" });
+  const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
+  const runResponse = await fetch(`${GITHUB_API}/repos/${repo}/actions/runs/${encodeURIComponent(body.run_id)}`, {
+    headers: githubHeaders(token),
+  });
+  if (!runResponse.ok) return jsonResponse({ ok: false, error: "run_not_found" }, 404, request, env);
+  const run = await runResponse.json().catch(() => ({}));
+  if (run.display_title !== `YouTube summary request ${body.request_id}` || !/^[a-f0-9]{40}$/.test(run.head_sha || "")) {
+    return jsonResponse({ ok: false, error: "run_not_allowed" }, 403, request, env);
+  }
+  const [state, description] = PROGRESS_STATES[body.state];
+  const statusResponse = await fetch(`${GITHUB_API}/repos/${repo}/statuses/${run.head_sha}`, {
+    method: "POST",
+    headers: githubHeaders(token),
+    body: JSON.stringify({
+      state,
+      context: `youtubesum/request/${body.request_id}`,
+      description,
+      target_url: OWNER_ACTIONS_URL,
+    }),
+  });
+  if (!statusResponse.ok) throw new Error("progress_write_failed");
+  return jsonResponse({ ok: true }, 202, request, env);
+}
+
+function safeProgressMessage(description, state) {
+  const allowed = new Set(Object.values(PROGRESS_STATES).map((item) => item[1]));
+  if (allowed.has(description)) return description;
+  if (state === "complete") return "Email sent successfully.";
+  if (state === "failed") return "The private workflow failed. Check private Actions for details.";
+  return "The private runner is processing the request.";
+}
+
+function isAllowedPagesOrigin(request, env) {
+  return (request.headers.get("Origin") || "") === env.PAGES_ORIGIN;
+}
+
+async function hasOwnerSession(request, env) {
+  const match = /^Bearer ([A-Za-z0-9_.-]{20,4096})$/.exec(request.headers.get("Authorization") || "");
+  return Boolean(match && await verifySessionToken(match[1], env));
+}
+
+async function createProgressToken(requestId, env, now = Date.now()) {
+  const encoded = encodeBase64Url(encoder.encode(JSON.stringify({
+    exp: Math.floor(now / 1000) + 48 * 60 * 60,
+    request_id: requestId,
+    scope: "progress",
+  })));
+  return `${encoded}.${encodeBase64Url(await signHmac(encoded, env.SESSION_SIGNING_SECRET))}`;
+}
+
+async function createStatusReadToken(requestId, env, now = Date.now()) {
+  const encoded = encodeBase64Url(encoder.encode(JSON.stringify({
+    exp: Math.floor(now / 1000) + 48 * 60 * 60,
+    request_id: requestId,
+    scope: "status:read",
+  })));
+  return `${encoded}.${encodeBase64Url(await signHmac(encoded, env.SESSION_SIGNING_SECRET))}`;
+}
+
+async function verifyStatusReadToken(token, requestId, env, now = Date.now()) {
+  if (!isConfiguredValue(env.SESSION_SIGNING_SECRET)) return false;
+  const parts = typeof token === "string" ? token.split(".") : [];
+  if (parts.length !== 2) return false;
+  try {
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      await crypto.subtle.importKey("raw", encoder.encode(env.SESSION_SIGNING_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]),
+      decodeBase64Url(parts[1]),
+      encoder.encode(parts[0]),
+    );
+    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
+    return valid && payload.scope === "status:read" && payload.request_id === requestId &&
+      Number.isInteger(payload.exp) && payload.exp > Math.floor(now / 1000);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyProgressToken(token, requestId, env, now = Date.now()) {
+  if (!isConfiguredValue(env.SESSION_SIGNING_SECRET)) return false;
+  const parts = typeof token === "string" ? token.split(".") : [];
+  if (parts.length !== 2) return false;
+  try {
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      await crypto.subtle.importKey("raw", encoder.encode(env.SESSION_SIGNING_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]),
+      decodeBase64Url(parts[1]),
+      encoder.encode(parts[0]),
+    );
+    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
+    return valid && payload.scope === "progress" && payload.request_id === requestId && Number.isInteger(payload.exp) && payload.exp > Math.floor(now / 1000);
+  } catch {
+    return false;
+  }
 }
 
 async function createGitHubAppJwt(env, now = Date.now()) {
@@ -327,14 +620,14 @@ function preflight(request, env) {
   const requestedHeaders = (request.headers.get("Access-Control-Request-Headers") || "")
     .toLowerCase().split(",").map((header) => header.trim()).filter(Boolean);
   const allowedHeaders = new Set(["authorization", "content-type"]);
-  if (origin !== env.PAGES_ORIGIN || requestedMethod !== "POST" || requestedHeaders.some((header) => !allowedHeaders.has(header))) {
+  if (origin !== env.PAGES_ORIGIN || !["GET", "POST"].includes(requestedMethod) || requestedHeaders.some((header) => !allowedHeaders.has(header))) {
     return jsonResponse({ ok: false, error: "origin_not_allowed" }, 403, request, env);
   }
   return new Response(null, {
     status: 204,
     headers: securityHeaders({
       ...corsHeaders(origin),
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Authorization, Content-Type",
       "Access-Control-Max-Age": "600",
       "Cache-Control": "no-store",

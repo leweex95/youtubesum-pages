@@ -12,7 +12,7 @@ The page is a static frontend. Once configured, it signs the owner in with GitHu
 
 The form deliberately stays unavailable until `app.js` is configured with the deployed Worker URL and the complete authenticated dispatch flow is tested. See [`worker/SETUP.md`](worker/SETUP.md). Never place GitHub tokens, App private keys, Kaggle credentials, SMTP secrets, or private workflow results in this public repository.
 
-The Pages deployment uploads only `index.html`, `styles.css`, and `app.js`; Worker source and setup files are not published as site assets.
+The Pages deployment uploads `index.html`, `how-it-works.html`, `styles.css`, and `app.js`; Worker source and setup files are not published as site assets. The request form remains disabled until the full sign-in-to-email flow is verified.
 
 ## Related private processing repository
 

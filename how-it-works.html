@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f5f1">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+    <meta name="description" content="A plain-language walkthrough of the private YouTube summarizer, its data boundaries, and engineering choices.">
+    <title>How it works · YouTube Summary Desk</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell walkthrough-shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="YouTube Summary Desk home">
+          <span class="brand-mark" aria-hidden="true">▶</span>
+          <span>PERSONAL TOOL <span class="brand-divider">/</span> VIDEO NOTES</span>
+        </a>
+        <nav class="topnav" aria-label="Main navigation">
+          <a href="./">Request page</a>
+          <a class="current" href="how-it-works.html" aria-current="page">How it works</a>
+          <a class="github-link" href="https://github.com/leweex95/youtubesum-pages" target="_blank" rel="noreferrer">Public site code <span aria-hidden="true">↗</span></a>
+        </nav>
+      </header>
+
+      <article class="walkthrough">
+        <header class="walkthrough-intro">
+          <p class="eyebrow">PROJECT WALKTHROUGH</p>
+          <h1>A small web form.<br><span>A private processing workflow.</span></h1>
+          <p>This is a personal tool, not a public summarization service. The website accepts an owner-only request; a separate private system processes it and emails the result.</p>
+        </header>
+
+        <section class="walk-section" aria-labelledby="flow-title">
+          <div class="walk-heading"><span class="walk-index">01</span><div><h2 id="flow-title">From link to email</h2><p>Each part has one job and a clear boundary.</p></div></div>
+          <ol class="flow-list">
+            <li><span>01</span><div><h3>Owner signs in and configures a request</h3><p>The page accepts one public YouTube video URL, a summarization approach, and selected summary formats. Prompt edits apply to that request only.</p></div></li>
+            <li><span>02</span><div><h3>A server checks and tracks the request</h3><p>A Cloudflare Worker verifies the GitHub account, validates the settings, and dispatches the private workflow. The page receives coarse progress milestones, not workflow logs or content.</p></div></li>
+            <li><span>03</span><div><h3>The Windows runner reads captions</h3><p>The runner uses yt-dlp for video details and available subtitles; it does not download the video. It preserves the original captions and creates a separate cleaned transcript.</p></div></li>
+            <li><span>04</span><div><h3>The app prepares and summarizes text</h3><p>Long transcripts are split into sections and combined into a final summary. TextGenHub sends summary requests through the owner’s signed-in ChatGPT browser session. This depends on that session and on ChatGPT’s current website.</p></div></li>
+            <li><span>05</span><div><h3>Optional audio, then email</h3><p>VoiceGenHub creates the requested narration and FFmpeg encodes an MP3. If narration fails, the app skips email rather than sending an incomplete result. Finished files are emailed through configured SMTP.</p></div></li>
+          </ol>
+        </section>
+
+        <section class="walk-section" aria-labelledby="boundaries-title">
+          <div class="walk-heading"><span class="walk-index">02</span><div><h2 id="boundaries-title">Where data goes</h2><p>The public page is not where the video is processed.</p></div></div>
+          <div class="boundary-grid">
+            <div><span class="boundary-label">Public website</span><p>Hosts the form and sign-in flow. The browser sends the link directly to the Worker; the Pages host does not receive it. The public site does not display transcripts, summaries, or job logs.</p></div>
+            <div><span class="boundary-label">Private runner</span><p>Runs the Python app and keeps transcripts, summaries, audio, and checkpoints in its configured workspace. Subtitle text is sent to ChatGPT for summarization.</p></div>
+            <div><span class="boundary-label">Other services</span><p>YouTube supplies captions. The optional narration provider receives the selected summary text. SMTP delivers the finished files to the configured inbox.</p></div>
+          </div>
+        </section>
+
+        <section class="walk-section" aria-labelledby="design-title">
+          <div class="walk-heading"><span class="walk-index">03</span><div><h2 id="design-title">Engineering choices</h2><p>These choices make the workflow easier to check, recover, and change.</p></div></div>
+          <div class="design-grid">
+            <div><h3>Narrow request boundary</h3><p>The bridge accepts one validated video URL and can trigger only the intended private workflow. It does not return private output to the browser.</p></div>
+            <div><h3>Keep work resumable</h3><p>Successful processing stages are checkpointed. On a retry, the app checks that inputs, settings, and saved files still match before reusing results.</p></div>
+            <div><h3>Make services replaceable</h3><p>YouTube, text generation, narration, and email are separated behind small interfaces. Most tests use fakes, not live accounts or paid services.</p></div>
+            <div><h3>Separate AI from control logic</h3><p>AI writes the summaries. Link validation, file handling, checkpoints, retries, and email rules are regular code with explicit tests.</p></div>
+            <div><h3>Report partial failures honestly</h3><p>A summary can be kept if an optional step fails. The job reports warnings and does not label missing narration as a complete emailed result.</p></div>
+            <div><h3>Treat captions as input, not instructions</h3><p>Video captions can contain misleading text. Prompts ask ChatGPT to summarize them, not to follow directions found inside the transcript.</p></div>
+          </div>
+        </section>
+
+        <section class="walk-section limits" aria-labelledby="limits-title">
+          <div class="walk-heading"><span class="walk-index">04</span><div><h2 id="limits-title">Limits</h2><p>Important dependencies are stated plainly.</p></div></div>
+          <ul>
+            <li>The Windows PC and its self-hosted runner must be online. GitHub’s queue is temporary; this is not a durable job service.</li>
+            <li>Captions may be missing or inaccurate. ChatGPT browser automation can break when login, usage limits, or the website changes.</li>
+            <li>Email and narration depend on configured services. If the runner is offline or a provider fails, the request may not finish.</li>
+            <li>The request form stays disabled until the complete sign-in-to-email flow has been verified.</li>
+          </ul>
+        </section>
+
+        <footer class="walk-footer">
+          <a class="back-link" href="./">← Back to the request page</a>
+          <span>Personal project · private processing code</span>
+        </footer>
+      </article>
+    </main>
+  </body>
+</html>

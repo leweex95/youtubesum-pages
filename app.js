@@ -1,9 +1,10 @@
 (() => {
   "use strict";
 
-  // Public endpoint, not a credential. Fill this in after deploying the Worker.
-  // Keep the empty value until the authenticated end-to-end flow is verified.
+  // The bridge is live for owner sign-in verification; keep dispatch paused
+  // until the private processing-to-email flow passes end-to-end verification.
   const BRIDGE_URL = "https://youtubesum-submit.csibi-levente14.workers.dev";
+  const SUBMISSIONS_ENABLED = false;
   const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
 
   const form = document.getElementById("request-form");
@@ -13,6 +14,15 @@
   const submitButton = document.getElementById("submit-request");
   const note = document.getElementById("setup-note");
   const badge = document.getElementById("bridge-badge");
+  const modeSelect = document.getElementById("summary-mode");
+  const formats = document.getElementById("summary-formats");
+  const promptEditor = document.getElementById("prompt-editor");
+  const promptList = document.getElementById("prompt-list");
+  const progressPanel = document.getElementById("progress-panel");
+  const progressSpinner = document.getElementById("progress-spinner");
+  const progressTitle = document.getElementById("progress-title");
+  const progressFeed = document.getElementById("progress-feed");
+  const actionsLink = document.getElementById("actions-link");
 
   let bridgeOrigin = null;
   let sessionToken = null;
@@ -20,6 +30,11 @@
   let authPopup = null;
   let popupMonitor = null;
   let busy = false;
+  let trackingJob = false;
+  let promptTemplates = {};
+  let activeRequestId = null;
+  let pollTimer = null;
+  const seenProgress = new Set();
 
   try {
     if (BRIDGE_URL) {
@@ -47,10 +62,15 @@
     sessionExpiresAt = expiresAt;
     signInButton.hidden = true;
     signOutButton.hidden = false;
-    input.disabled = false;
-    submitButton.disabled = busy;
+    input.disabled = !SUBMISSIONS_ENABLED;
+    modeSelect.disabled = !SUBMISSIONS_ENABLED;
+    formats.disabled = !SUBMISSIONS_ENABLED;
+    submitButton.disabled = !SUBMISSIONS_ENABLED || busy || trackingJob;
     setBadge("OWNER SIGNED IN", "ready");
-    setMessage("Signed in for this browser session. The Windows runner must be online; queued jobs may expire after about 24 hours.", "success");
+    setMessage(SUBMISSIONS_ENABLED
+      ? "Signed in for this browser session. The Windows runner must be online; queued jobs may expire after about 24 hours."
+      : "GitHub sign-in verified. Submissions remain paused until private processing and MP3 email delivery pass an end-to-end check.", "success");
+    void loadPromptTemplates();
   }
 
   function clearSession(message = "Sign in with the owner’s GitHub account to submit a request.") {
@@ -60,7 +80,12 @@
     signInButton.hidden = false;
     signOutButton.hidden = true;
     input.disabled = true;
+    modeSelect.disabled = true;
+    formats.disabled = true;
     submitButton.disabled = true;
+    promptTemplates = {};
+    promptList.replaceChildren();
+    promptEditor.hidden = true;
     if (bridgeOrigin) {
       setBadge("SIGN IN REQUIRED");
       setMessage(message);
@@ -145,15 +170,134 @@
   }
 
   function showAccepted() {
-    const text = document.createTextNode("Request accepted by GitHub. The Windows runner must be online; an offline queued job may expire after about 24 hours. ");
-    const link = document.createElement("a");
-    link.href = OWNER_ACTIONS_URL;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = "Check private Actions status";
-    note.replaceChildren(text, link);
-    note.dataset.state = "success";
-    setBadge("REQUEST ACCEPTED", "ready");
+    setMessage("Request accepted. Waiting for the private Windows runner; an offline queued job may expire after about 24 hours.", "success");
+    setBadge("REQUEST QUEUED", "ready");
+    progressPanel.hidden = false;
+    progressSpinner.hidden = false;
+    progressTitle.textContent = "Request is in progress";
+    actionsLink.href = OWNER_ACTIONS_URL;
+    addProgress("Request accepted by GitHub Actions.", "pending");
+  }
+
+  function setRequestControlsDisabled(disabled) {
+    const paused = !SUBMISSIONS_ENABLED;
+    input.disabled = paused || disabled || !sessionToken;
+    modeSelect.disabled = paused || disabled || !sessionToken;
+    formats.disabled = paused || disabled || !sessionToken;
+    submitButton.disabled = paused || disabled || busy || trackingJob || !sessionToken;
+    for (const textarea of promptList.querySelectorAll("textarea")) textarea.disabled = disabled || !sessionToken;
+  }
+
+  async function loadPromptTemplates() {
+    if (!bridgeOrigin || !sessionToken) return;
+    const sessionAtRequest = sessionToken;
+    try {
+      const response = await fetch(`${bridgeOrigin}/api/prompts`, {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+        redirect: "error",
+        headers: { Authorization: `Bearer ${sessionAtRequest}` },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (sessionToken !== sessionAtRequest) return;
+      if (!response.ok || result.ok !== true || !result.prompts || typeof result.prompts !== "object") {
+        throw new Error("prompt_catalog_unavailable");
+      }
+      promptTemplates = result.prompts;
+      promptList.replaceChildren();
+      for (const [name, template] of Object.entries(promptTemplates)) {
+        if (typeof template !== "string") continue;
+        const details = document.createElement("details");
+        details.className = "prompt-item";
+        const summary = document.createElement("summary");
+        summary.textContent = `${name.replaceAll("_", " ")} prompt`;
+        const label = document.createElement("label");
+        const textarea = document.createElement("textarea");
+        textarea.dataset.preset = name;
+        textarea.dataset.original = template;
+        textarea.rows = 9;
+        textarea.value = template;
+        textarea.disabled = !sessionToken;
+        label.append(document.createTextNode("Edit for this request"), textarea);
+        details.append(summary, label);
+        promptList.append(details);
+      }
+      promptEditor.hidden = false;
+    } catch {
+      if (sessionToken !== sessionAtRequest) return;
+      promptTemplates = {};
+      promptEditor.hidden = true;
+      setMessage("Signed in. Prompt previews are temporarily unavailable; the default prompt templates will be used.", "error");
+    }
+  }
+
+  function addProgress(message, state = "pending") {
+    const key = `${state}:${message}`;
+    if (seenProgress.has(key)) return;
+    seenProgress.add(key);
+    const item = document.createElement("li");
+    item.dataset.state = state;
+    item.textContent = message;
+    progressFeed.append(item);
+  }
+
+  function finishTracking(state, message) {
+    trackingJob = false;
+    progressSpinner.hidden = true;
+    progressTitle.textContent = state === "complete" ? "Request complete" : "Request needs attention";
+    setBadge(state === "complete" ? "COMPLETE" : "FAILED", state === "complete" ? "ready" : "error");
+    addProgress(message, state);
+    setMessage(message, state === "complete" ? "success" : "error");
+    if (sessionToken && Date.now() < sessionExpiresAt) setRequestControlsDisabled(false);
+  }
+
+  async function pollStatus(requestId, readToken) {
+    if (activeRequestId !== requestId) return;
+    try {
+      const response = await fetch(`${bridgeOrigin}/api/status/${encodeURIComponent(requestId)}`, {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+        redirect: "error",
+        headers: { Authorization: `Bearer ${readToken}` },
+      });
+      if (response.status === 401) {
+        finishTracking("failed", "The private status window expired. Check private Actions for the final result.");
+        return;
+      }
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok !== true || result.request_id !== requestId) throw new Error("status_unavailable");
+      for (const event of Array.isArray(result.events) ? result.events : []) {
+        if (event && typeof event.message === "string") addProgress(event.message, event.state || "pending");
+      }
+      if (result.state === "complete" || result.state === "failed") {
+        finishTracking(result.state, result.message || (result.state === "complete" ? "Processing completed." : "Processing failed."));
+        return;
+      }
+      setBadge(result.state === "running" ? "PROCESSING" : "REQUEST QUEUED", "ready");
+      setMessage(result.message || "Waiting for a status update…", "success");
+      progressSpinner.hidden = false;
+    } catch {
+      setMessage("Status check temporarily unavailable; retrying automatically…", "error");
+    }
+    if (activeRequestId === requestId) pollTimer = window.setTimeout(() => pollStatus(requestId, readToken), 10_000);
+  }
+
+  function submissionOptions() {
+    const selectedFormats = Array.from(formats.querySelectorAll('input[name="format"]:checked')).map((item) => item.value);
+    if (!selectedFormats.includes("concise")) throw new Error("Keep Concise selected because MP3 narration uses that format.");
+    const promptOverrides = {};
+    for (const textarea of promptList.querySelectorAll("textarea[data-preset]")) {
+      const name = textarea.dataset.preset;
+      const applicable = selectedFormats.includes(name) || (name.startsWith("system:") && modeSelect.value !== "single");
+      if (applicable && textarea.value !== textarea.dataset.original) {
+        promptOverrides[name] = textarea.value;
+      }
+    }
+    return { mode: modeSelect.value, formats: selectedFormats, prompt_overrides: promptOverrides };
   }
 
   function consumeAuthHandoff() {
@@ -180,11 +324,17 @@
 
   async function submitRequest(event) {
     event.preventDefault();
+    if (!SUBMISSIONS_ENABLED) {
+      setMessage("Submissions are paused until the private processing and email flow is verified.", "error");
+      return;
+    }
     if (!ensureSession() || busy) return;
 
     let youtubeUrl;
+    let options;
     try {
       youtubeUrl = normalizeVideoUrl(input.value.trim());
+      options = submissionOptions();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Enter a valid YouTube video URL.", "error");
       input.focus();
@@ -194,8 +344,13 @@
     busy = true;
     submitButton.disabled = true;
     signInButton.disabled = true;
+    progressPanel.hidden = false;
+    progressSpinner.hidden = false;
+    progressTitle.textContent = "Submitting request";
+    setRequestControlsDisabled(true);
     setMessage("Sending a private workflow request…");
     try {
+      const requestId = crypto.randomUUID().replaceAll("-", "").toLowerCase();
       const response = await fetch(`${bridgeOrigin}/api/dispatch`, {
         method: "POST",
         mode: "cors",
@@ -206,7 +361,7 @@
           "Authorization": `Bearer ${sessionToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ youtube_url: youtubeUrl }),
+        body: JSON.stringify({ youtube_url: youtubeUrl, request_id: requestId, ...options }),
       });
       const result = await response.json().catch(() => ({}));
       if (response.status === 401) {
@@ -217,27 +372,47 @@
         setMessage("The secure bridge could not submit the request. Please try again later.", "error");
       } else {
         input.value = "";
+        if (typeof result.status_token !== "string" || result.status_token.length > 4096) {
+          setMessage("The request was accepted, but a secure live status token was not returned. Check private Actions status before retrying.", "error");
+          setBadge("REQUEST ACCEPTED", "ready");
+          return;
+        }
+        activeRequestId = requestId;
+        trackingJob = true;
+        progressFeed.replaceChildren();
+        seenProgress.clear();
         showAccepted();
+        void pollStatus(requestId, result.status_token);
       }
     } catch {
-      setMessage("Could not reach the secure bridge. Check your connection and try again.", "error");
+      setMessage("The bridge could not confirm whether the request was accepted. Check private Actions before retrying.", "error");
+      progressSpinner.hidden = true;
+      progressPanel.hidden = true;
     } finally {
       busy = false;
       signInButton.disabled = false;
-      submitButton.disabled = !ensureSession();
+      if (!trackingJob) setRequestControlsDisabled(!ensureSession());
+      else submitButton.disabled = true;
+      if (!trackingJob) {
+        progressSpinner.hidden = true;
+        progressPanel.hidden = true;
+      }
     }
   }
 
   signInButton.addEventListener("click", startSignIn);
-  signOutButton.addEventListener("click", () => clearSession("Signed out. Sign in again to submit another request."));
+  signOutButton.addEventListener("click", () => {
+    clearSession("Signed out. Sign in again to submit another request.");
+    for (const textarea of promptList.querySelectorAll("textarea")) textarea.disabled = true;
+  });
   form.addEventListener("submit", submitRequest);
 
   if (!bridgeOrigin) {
     signInButton.disabled = true;
     input.disabled = true;
     submitButton.disabled = true;
-    setBadge("BRIDGE SETUP REQUIRED");
-    setMessage("The authenticated bridge has not been configured yet.");
+    setBadge("SUBMISSIONS PAUSED");
+    setMessage("Sign-in is available for verification. Submissions are paused until the private processing and email flow passes an end-to-end check.");
   } else {
     signInButton.disabled = false;
     if (!consumeAuthHandoff()) clearSession();
