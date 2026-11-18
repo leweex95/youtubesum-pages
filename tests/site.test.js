@@ -15,11 +15,11 @@ test("request page links to the public walkthrough and starts disabled", async (
   assert.match(html, /id="progress-panel"/);
 });
 
-test("request bridge is configured while submissions stay paused until end-to-end verification", async () => {
+test("request bridge is configured and owner submissions are enabled after end-to-end verification", async () => {
   const script = await read("app.js");
   assert.match(script, /const BRIDGE_URL = "https:\/\/youtubesum-submit\.csibi-levente14\.workers\.dev"/);
-  assert.match(script, /const SUBMISSIONS_ENABLED = false/);
-  assert.match(script, /Submissions are paused until the private processing and email flow/);
+  assert.match(script, /const SUBMISSIONS_ENABLED = true/);
+  assert.match(script, /The Windows runner must be online/);
 });
 
 test("walkthrough explains the data boundary and practical limits", async () => {

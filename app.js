@@ -1,10 +1,10 @@
 (() => {
   "use strict";
 
-  // The bridge is live for owner sign-in verification; keep dispatch paused
-  // until the private processing-to-email flow passes end-to-end verification.
+  // Enable owner-only dispatch after the private processing-to-email flow passed
+  // end-to-end verification. The Worker still enforces owner authentication.
   const BRIDGE_URL = "https://youtubesum-submit.csibi-levente14.workers.dev";
-  const SUBMISSIONS_ENABLED = false;
+  const SUBMISSIONS_ENABLED = true;
   const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
 
   const form = document.getElementById("request-form");
