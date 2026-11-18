@@ -3,7 +3,7 @@
 
   // Public endpoint, not a credential. Fill this in after deploying the Worker.
   // Keep the empty value until the authenticated end-to-end flow is verified.
-  const BRIDGE_URL = "";
+  const BRIDGE_URL = "https://youtubesum-submit.csibi-levente14.workers.dev";
   const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
 
   const form = document.getElementById("request-form");

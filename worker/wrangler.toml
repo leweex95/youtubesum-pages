@@ -15,6 +15,6 @@ WORKFLOW_REF = "main"
 
 # Set these non-secret app identifiers after creating/installing the GitHub App.
 # Never put its client secret or private key in this file.
-GITHUB_APP_ID = "CONFIGURE_ME"
-GITHUB_APP_CLIENT_ID = "CONFIGURE_ME"
-GITHUB_APP_INSTALLATION_ID = "CONFIGURE_ME"
+GITHUB_APP_ID = "5802997"
+GITHUB_APP_CLIENT_ID = "Iv23libhLaKXtwCihXPL"
+GITHUB_APP_INSTALLATION_ID = "182995971"
