@@ -8,7 +8,7 @@ The `Deploy GitHub Pages` workflow publishes the site from the `main` branch. In
 
 ## Request flow
 
-The page is a static frontend. Once configured, it signs the owner in with GitHub and submits one YouTube URL to the Cloudflare Worker in `worker/`. The Worker verifies the allow-listed GitHub account and uses a narrowly scoped GitHub App installation token to dispatch `workflow_dispatch` in the private processing repository. No GitHub access token, App private key, SMTP data, summaries, or transcripts are placed in this repository or returned to the browser. The browser receives only a short-lived, bridge-scoped session token held in memory.
+The page is a static frontend. Once configured, it signs the owner in with GitHub and submits one YouTube URL to the Cloudflare Worker in `worker/`. The Worker verifies the allow-listed GitHub account and uses a narrowly scoped GitHub App installation token to dispatch `workflow_dispatch` in the private processing repository. While the request is queued or running, the page can request cancellation of that specific workflow run. No GitHub access token, App private key, SMTP data, summaries, or transcripts are placed in this repository or returned to the browser. The browser receives only short-lived, request-scoped tokens held in memory.
 
 The form deliberately stays unavailable until `app.js` is configured with the deployed Worker URL and the complete authenticated dispatch flow is tested. See [`worker/SETUP.md`](worker/SETUP.md). Never place GitHub tokens, App private keys, Kaggle credentials, SMTP secrets, or private workflow results in this public repository.
 

@@ -35,7 +35,7 @@
           <div class="walk-heading"><span class="walk-index">01</span><div><h2 id="flow-title">From link to email</h2><p>Each part has one job and a clear boundary.</p></div></div>
           <ol class="flow-list">
             <li><span>01</span><div><h3>Owner signs in and configures a request</h3><p>The page accepts one public YouTube video URL, a summarization approach, and selected summary formats. Prompt edits apply to that request only.</p></div></li>
-            <li><span>02</span><div><h3>A server checks and tracks the request</h3><p>A Cloudflare Worker verifies the GitHub account, validates the settings, and dispatches the private workflow. The page receives coarse progress milestones, not workflow logs or content.</p></div></li>
+            <li><span>02</span><div><h3>A server checks and tracks the request</h3><p>A Cloudflare Worker verifies the GitHub account, validates the settings, and dispatches the private workflow. While it is queued or running, the page can request cancellation; GitHub confirms when the run has stopped. The page receives coarse progress milestones, not workflow logs or content.</p></div></li>
             <li><span>03</span><div><h3>The Windows runner reads captions</h3><p>The runner uses yt-dlp for video details and available subtitles; it does not download the video. It preserves the original captions and creates a separate cleaned transcript.</p></div></li>
             <li><span>04</span><div><h3>The app prepares and summarizes text</h3><p>Long transcripts are split into sections and combined into a final summary. TextGenHub sends summary requests through the owner’s signed-in ChatGPT browser session. This depends on that session and on ChatGPT’s current website.</p></div></li>
             <li><span>05</span><div><h3>Optional audio, then email</h3><p>VoiceGenHub creates the requested narration and FFmpeg encodes an MP3. If narration fails, the app skips email rather than sending an incomplete result. Finished files are emailed through configured SMTP.</p></div></li>
@@ -54,7 +54,7 @@
         <section class="walk-section" aria-labelledby="design-title">
           <div class="walk-heading"><span class="walk-index">03</span><div><h2 id="design-title">Engineering choices</h2><p>These choices make the workflow easier to check, recover, and change.</p></div></div>
           <div class="design-grid">
-            <div><h3>Narrow request boundary</h3><p>The bridge accepts one validated video URL and can trigger only the intended private workflow. It does not return private output to the browser.</p></div>
+            <div><h3>Narrow request boundary</h3><p>The bridge accepts one validated video URL and can trigger or cancel only the intended private workflow. A request-scoped cancellation token cannot control another run. It does not return private output to the browser.</p></div>
             <div><h3>Keep work resumable</h3><p>Successful processing stages are checkpointed. On a retry, the app checks that inputs, settings, and saved files still match before reusing results.</p></div>
             <div><h3>Make services replaceable</h3><p>YouTube, text generation, narration, and email are separated behind small interfaces. Most tests use fakes, not live accounts or paid services.</p></div>
             <div><h3>Separate AI from control logic</h3><p>AI writes the summaries. Link validation, file handling, checkpoints, retries, and email rules are regular code with explicit tests.</p></div>

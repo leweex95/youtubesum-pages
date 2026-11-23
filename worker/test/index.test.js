@@ -92,6 +92,16 @@ test("CORS preflight permits only the Pages origin and dispatch headers", async 
   }), baseEnv);
   assert.equal(statusOptions.status, 204);
 
+  const cancelOptions = await handleRequest(new Request("https://bridge.workers.dev/api/cancel/0123456789abcdef0123456789abcdef", {
+    method: "OPTIONS",
+    headers: {
+      Origin: baseEnv.PAGES_ORIGIN,
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "authorization,content-type",
+    },
+  }), baseEnv);
+  assert.equal(cancelOptions.status, 204);
+
   const denied = await handleRequest(new Request("https://bridge.workers.dev/api/dispatch", {
     method: "OPTIONS",
     headers: {
@@ -288,6 +298,7 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
   const commitStatuses = [];
   const sha = "a".repeat(40);
   const runRecord = {
+    id: 123,
     display_title: "YouTube summary request 0123456789abcdef0123456789abcdef",
     head_sha: sha,
     status: "in_progress",
@@ -303,6 +314,7 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
     if (url.endsWith("/actions/workflows/summarize.yml/dispatches")) {
       return new Response(null, { status: 204 });
     }
+    if (url.endsWith("/actions/runs/123/cancel")) return new Response(null, { status: 202 });
     if (url.includes("/contents/prompts/")) {
       return Response.json({
         encoding: "base64",
@@ -347,6 +359,7 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
       actions_url: "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml",
     });
     assert.match(result.status_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.match(result.cancel_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     assert.equal(calls.length, 2);
     assert.match(calls[0].url, /\/app\/installations\/67890\/access_tokens$/);
     assert.match(calls[1].url, /\/repos\/leweex95\/youtubesum\/actions\/workflows\/summarize\.yml\/dispatches$/);
@@ -364,6 +377,37 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
     assert.deepEqual(JSON.parse(dispatch.inputs.prompt_overrides), {
       concise: "Summary in {output_language}: {transcript}",
     });
+
+    const cancelResponse = await handleRequest(new Request(
+      "https://bridge.workers.dev/api/cancel/0123456789abcdef0123456789abcdef",
+      {
+        method: "POST",
+        headers: {
+          Origin: env.PAGES_ORIGIN,
+          Authorization: `Bearer ${result.cancel_token}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    ), env);
+    assert.equal(cancelResponse.status, 202);
+    assert.deepEqual(await cancelResponse.json(), { ok: true, state: "cancelling" });
+    assert.match(calls[4].url, /\/actions\/runs\/123\/cancel$/);
+    assert.equal(calls[4].init.method, "POST");
+
+    const wrongRequestCancel = await handleRequest(new Request(
+      "https://bridge.workers.dev/api/cancel/ffffffffffffffffffffffffffffffff",
+      {
+        method: "POST",
+        headers: {
+          Origin: env.PAGES_ORIGIN,
+          Authorization: `Bearer ${result.cancel_token}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+    ), env);
+    assert.equal(wrongRequestCancel.status, 401);
 
     const progress = await handleRequest(new Request("https://bridge.workers.dev/api/progress", {
       method: "POST",
@@ -396,6 +440,16 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
     assert.equal(statusResult.message, "Summary generated");
     assert.deepEqual(statusResult.events.map((event) => event.message), ["Summary generated"]);
 
+    runRecord.status = "completed";
+    runRecord.conclusion = "cancelled";
+    const cancelledStatus = await handleRequest(new Request(
+      "https://bridge.workers.dev/api/status/0123456789abcdef0123456789abcdef",
+      { headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${result.status_token}` } },
+    ), env);
+    const cancelledResult = await cancelledStatus.json();
+    assert.equal(cancelledResult.state, "cancelled");
+    assert.equal(cancelledResult.message, "The request was cancelled.");
+
     const catalogResponse = await handleRequest(new Request("https://bridge.workers.dev/api/prompts", {
       headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${session.token}` },
     }), env);
@@ -408,7 +462,9 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
       .map((call) => JSON.parse(call.init.body).permissions);
     assert.deepEqual(tokenPermissions, [
       { actions: "write" },
+      { actions: "write" },
       { actions: "read", statuses: "write" },
+      { actions: "read", statuses: "read" },
       { actions: "read", statuses: "read" },
       { contents: "read" },
     ]);
