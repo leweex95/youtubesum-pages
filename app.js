@@ -22,6 +22,7 @@
   const progressSpinner = document.getElementById("progress-spinner");
   const progressTitle = document.getElementById("progress-title");
   const progressFeed = document.getElementById("progress-feed");
+  const cancelButton = document.getElementById("cancel-request");
   const actionsLink = document.getElementById("actions-link");
 
   let bridgeOrigin = null;
@@ -31,6 +32,9 @@
   let popupMonitor = null;
   let busy = false;
   let trackingJob = false;
+  let cancelToken = null;
+  let activeStatusToken = null;
+  let cancellationRequested = false;
   let promptTemplates = {};
   let activeRequestId = null;
   let pollTimer = null;
@@ -175,6 +179,9 @@
     progressPanel.hidden = false;
     progressSpinner.hidden = false;
     progressTitle.textContent = "Request is in progress";
+    cancelButton.hidden = !cancelToken;
+    cancelButton.disabled = false;
+    cancelButton.textContent = "Cancel request";
     actionsLink.href = OWNER_ACTIONS_URL;
     addProgress("Request accepted by GitHub Actions.", "pending");
   }
@@ -245,11 +252,19 @@
 
   function finishTracking(state, message) {
     trackingJob = false;
+    cancellationRequested = false;
+    cancelToken = null;
+    activeStatusToken = null;
+    activeRequestId = null;
     progressSpinner.hidden = true;
-    progressTitle.textContent = state === "complete" ? "Request complete" : "Request needs attention";
-    setBadge(state === "complete" ? "COMPLETE" : "FAILED", state === "complete" ? "ready" : "error");
+    cancelButton.hidden = true;
+    cancelButton.disabled = false;
+    cancelButton.textContent = "Cancel request";
+    progressTitle.textContent = state === "complete" ? "Request complete" : state === "cancelled" ? "Request cancelled" : "Request needs attention";
+    const isSuccessful = state === "complete" || state === "cancelled";
+    setBadge(state === "complete" ? "COMPLETE" : state === "cancelled" ? "CANCELLED" : "FAILED", isSuccessful ? "ready" : "error");
     addProgress(message, state);
-    setMessage(message, state === "complete" ? "success" : "error");
+    setMessage(message, isSuccessful ? "success" : "error");
     if (sessionToken && Date.now() < sessionExpiresAt) setRequestControlsDisabled(false);
   }
 
@@ -273,17 +288,67 @@
       for (const event of Array.isArray(result.events) ? result.events : []) {
         if (event && typeof event.message === "string") addProgress(event.message, event.state || "pending");
       }
-      if (result.state === "complete" || result.state === "failed") {
-        finishTracking(result.state, result.message || (result.state === "complete" ? "Processing completed." : "Processing failed."));
+      if (["complete", "failed", "cancelled"].includes(result.state)) {
+        finishTracking(result.state, result.message || (result.state === "complete" ? "Processing completed." : result.state === "cancelled" ? "The request was cancelled." : "Processing failed."));
         return;
       }
       setBadge(result.state === "running" ? "PROCESSING" : "REQUEST QUEUED", "ready");
-      setMessage(result.message || "Waiting for a status update…", "success");
+      if (cancellationRequested) {
+        progressTitle.textContent = "Cancelling request";
+        setBadge("CANCELLING", "ready");
+        setMessage("Cancellation requested. Waiting for GitHub Actions to stop the workflow…", "success");
+      } else {
+        setMessage(result.message || "Waiting for a status update…", "success");
+      }
       progressSpinner.hidden = false;
     } catch {
       setMessage("Status check temporarily unavailable; retrying automatically…", "error");
     }
     if (activeRequestId === requestId) pollTimer = window.setTimeout(() => pollStatus(requestId, readToken), 10_000);
+  }
+
+  async function cancelRequest() {
+    if (!trackingJob || !activeRequestId || !cancelToken || cancelButton.disabled) return;
+    cancelButton.disabled = true;
+    cancelButton.textContent = "Cancelling…";
+    try {
+      const response = await fetch(`${bridgeOrigin}/api/cancel/${encodeURIComponent(activeRequestId)}`, {
+        method: "POST",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+        redirect: "error",
+        headers: {
+          "Authorization": `Bearer ${cancelToken}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result.ok === true && ["cancelling", "cancelled"].includes(result.state)) {
+        cancellationRequested = true;
+        cancelButton.textContent = "Cancelling…";
+        addProgress("Cancellation requested; waiting for GitHub Actions to stop the run.", "pending");
+        progressTitle.textContent = "Cancelling request";
+        setMessage("Cancellation requested. Waiting for GitHub Actions to stop the workflow…", "success");
+        return;
+      }
+      if (response.ok && result.ok === true && result.state === "already_finished") {
+        await pollStatus(activeRequestId, activeStatusToken);
+        return;
+      }
+      cancelButton.disabled = false;
+      cancelButton.textContent = "Cancel request";
+      if (result.error === "request_not_found_yet") {
+        setMessage("GitHub is still registering the workflow. Wait a few seconds, then try cancelling again.", "error");
+      } else {
+        setMessage("The request could not be cancelled. Check private Actions status and try again if it is still running.", "error");
+      }
+    } catch {
+      cancelButton.disabled = false;
+      cancelButton.textContent = "Cancel request";
+      setMessage("The cancellation could not be confirmed. Check private Actions status before retrying.", "error");
+    }
   }
 
   function submissionOptions() {
@@ -342,6 +407,9 @@
     }
 
     busy = true;
+    activeStatusToken = null;
+    cancelToken = null;
+    cancellationRequested = false;
     submitButton.disabled = true;
     signInButton.disabled = true;
     progressPanel.hidden = false;
@@ -377,12 +445,17 @@
           setBadge("REQUEST ACCEPTED", "ready");
           return;
         }
+        activeStatusToken = result.status_token;
+        cancelToken = typeof result.cancel_token === "string" && result.cancel_token.length <= 4096
+          ? result.cancel_token
+          : null;
         activeRequestId = requestId;
         trackingJob = true;
         progressFeed.replaceChildren();
         seenProgress.clear();
         showAccepted();
-        void pollStatus(requestId, result.status_token);
+        if (!cancelToken) setMessage("Request accepted, but cancellation is unavailable for this request. Check private Actions status.", "error");
+        void pollStatus(requestId, activeStatusToken);
       }
     } catch {
       setMessage("The bridge could not confirm whether the request was accepted. Check private Actions before retrying.", "error");
@@ -406,6 +479,7 @@
     for (const textarea of promptList.querySelectorAll("textarea")) textarea.disabled = true;
   });
   form.addEventListener("submit", submitRequest);
+  cancelButton.addEventListener("click", cancelRequest);
 
   if (!bridgeOrigin) {
     signInButton.disabled = true;

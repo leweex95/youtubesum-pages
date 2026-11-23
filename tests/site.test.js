@@ -13,6 +13,7 @@ test("request page links to the public walkthrough and starts disabled", async (
   assert.match(html, /id="summary-mode"/);
   assert.match(html, /id="prompt-editor"/);
   assert.match(html, /id="progress-panel"/);
+  assert.match(html, /id="cancel-request"[^>]*hidden>Cancel request/);
 });
 
 test("request bridge is configured and owner submissions are enabled after end-to-end verification", async () => {
@@ -20,6 +21,8 @@ test("request bridge is configured and owner submissions are enabled after end-t
   assert.match(script, /const BRIDGE_URL = "https:\/\/youtubesum-submit\.csibi-levente14\.workers\.dev"/);
   assert.match(script, /const SUBMISSIONS_ENABLED = true/);
   assert.match(script, /The Windows runner must be online/);
+  assert.match(script, /\/api\/cancel\//);
+  assert.match(script, /cancel_token/);
 });
 
 test("walkthrough explains the data boundary and practical limits", async () => {

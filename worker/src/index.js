@@ -57,6 +57,10 @@ export async function handleRequest(request, env) {
     return preflight(request, env);
   }
 
+  if (url.pathname.startsWith("/api/cancel/") && request.method === "OPTIONS") {
+    return preflight(request, env);
+  }
+
   if (url.pathname === "/api/prompts" && request.method === "GET") {
     return getPrompts(request, env);
   }
@@ -71,6 +75,10 @@ export async function handleRequest(request, env) {
 
   if (url.pathname === "/api/dispatch" && request.method === "POST") {
     return dispatchWorkflow(request, env);
+  }
+
+  if (url.pathname.startsWith("/api/cancel/") && request.method === "POST") {
+    return cancelWorkflow(request, env, url.pathname.slice("/api/cancel/".length));
   }
 
   if (url.pathname === "/api/progress" && request.method === "POST") {
@@ -265,6 +273,7 @@ async function dispatchWorkflow(request, env) {
 
   const installationToken = await createInstallationToken(env);
   const progressToken = await createProgressToken(requestId, env);
+  const cancelToken = await createRequestCancelToken(requestId, env);
   const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
   const dispatchResponse = await fetch(`${GITHUB_API}/repos/${repo}/actions/workflows/${encodeURIComponent(env.WORKFLOW_FILE)}/dispatches`, {
     method: "POST",
@@ -286,7 +295,66 @@ async function dispatchWorkflow(request, env) {
   }
 
   const statusReadToken = await createStatusReadToken(requestId, env);
-  return jsonResponse({ ok: true, request_id: requestId, status_token: statusReadToken, actions_url: OWNER_ACTIONS_URL }, 202, request, env);
+  return jsonResponse({
+    ok: true,
+    request_id: requestId,
+    status_token: statusReadToken,
+    cancel_token: cancelToken,
+    actions_url: OWNER_ACTIONS_URL,
+  }, 202, request, env);
+}
+
+async function cancelWorkflow(request, env, requestId) {
+  if (!isAllowedPagesOrigin(request, env)) {
+    return jsonResponse({ ok: false, error: "origin_not_allowed" }, 403, request, env);
+  }
+  if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 415, request, env);
+  }
+  if (!/^[a-f0-9]{32}$/.test(requestId)) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+
+  const bearer = /^Bearer ([A-Za-z0-9_.-]{20,4096})$/.exec(request.headers.get("Authorization") || "");
+  if (!bearer || !(await verifyRequestCancelToken(bearer[1], requestId, env))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  if (!configuredForDispatch(env)) {
+    return jsonResponse({ ok: false, error: "bridge_not_configured" }, 503, request, env);
+  }
+
+  const token = await createInstallationToken(env, { actions: "write" });
+  const run = await findRun(requestId, token, env);
+  if (!run) {
+    return jsonResponse({ ok: false, error: "request_not_found_yet" }, 409, request, env);
+  }
+  if (run.status === "completed") {
+    return jsonResponse({ ok: true, state: run.conclusion === "cancelled" ? "cancelled" : "already_finished" }, 200, request, env);
+  }
+
+  const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
+  const cancelResponse = await fetch(`${GITHUB_API}/repos/${repo}/actions/runs/${encodeURIComponent(run.id)}/cancel`, {
+    method: "POST",
+    headers: githubHeaders(token),
+  });
+  if (cancelResponse.status === 202) {
+    return jsonResponse({ ok: true, state: "cancelling" }, 202, request, env);
+  }
+
+  // A run can finish between the lookup and cancellation request. Report its
+  // current terminal state instead of turning that harmless race into an error.
+  if (cancelResponse.status === 409 || cancelResponse.status === 422) {
+    const latestResponse = await fetch(`${GITHUB_API}/repos/${repo}/actions/runs/${encodeURIComponent(run.id)}`, {
+      headers: githubHeaders(token),
+    });
+    if (latestResponse.ok) {
+      const latest = await latestResponse.json().catch(() => ({}));
+      if (latest.status === "completed") {
+        return jsonResponse({ ok: true, state: latest.conclusion === "cancelled" ? "cancelled" : "already_finished" }, 200, request, env);
+      }
+    }
+  }
+  return jsonResponse({ ok: false, error: "workflow_cancel_failed" }, 502, request, env);
 }
 
 function isValidPromptTemplate(template) {
@@ -386,8 +454,13 @@ async function getStatus(request, env, requestId = "") {
     message = "The Windows runner is online and processing the request.";
   }
   if (run.status === "completed" && run.conclusion !== "success") {
-    state = "failed";
-    message = "The private workflow failed before completion. Check private Actions for details.";
+    if (run.conclusion === "cancelled") {
+      state = "cancelled";
+      message = "The request was cancelled.";
+    } else {
+      state = "failed";
+      message = "The private workflow failed before completion. Check private Actions for details.";
+    }
   } else if (run.status === "completed" && run.conclusion === "success" && state !== "complete") {
     state = "complete";
     message = "Processing completed successfully.";
@@ -489,6 +562,15 @@ async function createStatusReadToken(requestId, env, now = Date.now()) {
   return `${encoded}.${encodeBase64Url(await signHmac(encoded, env.SESSION_SIGNING_SECRET))}`;
 }
 
+async function createRequestCancelToken(requestId, env, now = Date.now()) {
+  const encoded = encodeBase64Url(encoder.encode(JSON.stringify({
+    exp: Math.floor(now / 1000) + 48 * 60 * 60,
+    request_id: requestId,
+    scope: "request:cancel",
+  })));
+  return `${encoded}.${encodeBase64Url(await signHmac(encoded, env.SESSION_SIGNING_SECRET))}`;
+}
+
 async function verifyStatusReadToken(token, requestId, env, now = Date.now()) {
   if (!isConfiguredValue(env.SESSION_SIGNING_SECRET)) return false;
   const parts = typeof token === "string" ? token.split(".") : [];
@@ -502,6 +584,25 @@ async function verifyStatusReadToken(token, requestId, env, now = Date.now()) {
     );
     const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
     return valid && payload.scope === "status:read" && payload.request_id === requestId &&
+      Number.isInteger(payload.exp) && payload.exp > Math.floor(now / 1000);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyRequestCancelToken(token, requestId, env, now = Date.now()) {
+  if (!isConfiguredValue(env.SESSION_SIGNING_SECRET)) return false;
+  const parts = typeof token === "string" ? token.split(".") : [];
+  if (parts.length !== 2) return false;
+  try {
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      await crypto.subtle.importKey("raw", encoder.encode(env.SESSION_SIGNING_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]),
+      decodeBase64Url(parts[1]),
+      encoder.encode(parts[0]),
+    );
+    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
+    return valid && payload.scope === "request:cancel" && payload.request_id === requestId &&
       Number.isInteger(payload.exp) && payload.exp > Math.floor(now / 1000);
   } catch {
     return false;
