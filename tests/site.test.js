@@ -41,6 +41,7 @@ test("Pages deploys main automatically and allows manual feature previews only",
   const workflow = await read(".github/workflows/pages.yml");
   assert.match(workflow, /push:\s*\n\s*branches: \[main\]/);
   assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /github\.event_name == 'push'/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
   assert.match(workflow, /refs\/heads\/feature\//);
 });
