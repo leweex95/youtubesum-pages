@@ -18,6 +18,53 @@ const baseEnv = {
   SESSION_SIGNING_SECRET: "test-session-signing-secret-32-bytes-minimum",
 };
 
+function memoryLibraryDb() {
+  const videos = new Map();
+  const keywords = new Map();
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        sql,
+        bind(...bound) { values = bound; this.values = values; return this; },
+        async all() {
+          if (sql.includes("FROM library_keywords")) {
+            return { results: [...keywords.values()].sort((a, b) => a.normalized.localeCompare(b.normalized)) };
+          }
+          if (sql.includes("FROM summaries")) {
+            const [limit, offset] = values;
+            const rows = [...videos.values()].sort((a, b) => b.summarized_at.localeCompare(a.summarized_at));
+            return { results: rows.slice(offset, offset + limit).map(({ summaries_json, ...row }) => row) };
+          }
+          return { results: [] };
+        },
+        async first() {
+          if (sql.includes("COUNT(*)")) return { total: videos.size };
+          if (sql.includes("WHERE video_id =")) {
+            const row = videos.get(values[0]);
+            return row ? { ...row } : null;
+          }
+          return null;
+        },
+      };
+    },
+    async batch(statements) {
+      for (const statement of statements) {
+        const values = statement.values;
+        if (statement.sql.startsWith("INSERT INTO summaries")) {
+          videos.set(values[0], {
+            video_id: values[0], title: values[1], video_url: values[2], summarized_at: values[3],
+            output_language: values[4], summaries_json: values[5], keywords_json: values[6], updated_at: values[7],
+          });
+        } else if (statement.sql.startsWith("INSERT OR IGNORE INTO library_keywords")) {
+          if (!keywords.has(values[0])) keywords.set(values[0], { normalized: values[0], keyword: values[1] });
+        }
+      }
+      return [];
+    },
+  };
+}
+
 test("canonicalizes supported one-video URLs and strips query parameters", () => {
   assert.equal(
     canonicalizeYouTubeUrl("https://www.youtube.com/watch?v=jNQXAC9IVRw&feature=share"),
@@ -67,6 +114,11 @@ test("private prompt catalogue and request status require an approved origin and
     headers: { Origin: "https://attacker.example", Authorization: "Bearer invalid" },
   }), baseEnv);
   assert.equal(wrongOrigin.status, 401);
+
+  const privateLibrary = await handleRequest(new Request("https://bridge.workers.dev/api/library", {
+    headers: { Origin: baseEnv.PAGES_ORIGIN },
+  }), { ...baseEnv, SUMMARY_DB: memoryLibraryDb() });
+  assert.equal(privateLibrary.status, 401);
 });
 
 test("CORS preflight permits only the Pages origin and dispatch headers", async () => {
@@ -101,6 +153,16 @@ test("CORS preflight permits only the Pages origin and dispatch headers", async 
     },
   }), baseEnv);
   assert.equal(cancelOptions.status, 204);
+
+  const libraryOptions = await handleRequest(new Request("https://bridge.workers.dev/api/library/keywords", {
+    method: "OPTIONS",
+    headers: {
+      Origin: baseEnv.PAGES_ORIGIN,
+      "Access-Control-Request-Method": "GET",
+      "Access-Control-Request-Headers": "authorization",
+    },
+  }), baseEnv);
+  assert.equal(libraryOptions.status, 204);
 
   const denied = await handleRequest(new Request("https://bridge.workers.dev/api/dispatch", {
     method: "OPTIONS",
@@ -295,6 +357,7 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
   const env = {
     ...baseEnv,
     GITHUB_APP_PRIVATE_KEY: der.toString(),
+    SUMMARY_DB: memoryLibraryDb(),
   };
   const session = await createSessionToken("leweex95", "74991597", env);
   const calls = [];
@@ -378,10 +441,50 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
     assert.match(dispatch.inputs.status_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     assert.equal(dispatch.inputs.summary_mode, "chunked");
     assert.equal(dispatch.inputs.output_language, "en-US");
+    assert.deepEqual(JSON.parse(dispatch.inputs.existing_keywords), []);
+    assert.match(dispatch.inputs.archive_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.equal(Object.hasOwn(result, "archive_token"), false);
     assert.equal(dispatch.inputs.summary_formats, "concise,detailed");
     assert.deepEqual(JSON.parse(dispatch.inputs.prompt_overrides), {
       concise: "Summary in {output_language}: {transcript}",
     });
+
+    const archiveResponse = await handleRequest(new Request("https://bridge.workers.dev/api/library/record", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${dispatch.inputs.archive_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        request_id: "0123456789abcdef0123456789abcdef",
+        video_id: "jNQXAC9IVRw",
+        title: "First video",
+        url: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        output_language: "en-US",
+        summaries: { concise: "A private summary." },
+        keywords: ["History", " history ", "Ancient history"],
+      }),
+    }), env);
+    assert.equal(archiveResponse.status, 201);
+    assert.deepEqual((await archiveResponse.json()).keywords, ["History", "Ancient history"]);
+
+    const privateList = await handleRequest(new Request("https://bridge.workers.dev/api/library", {
+      headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${session.token}` },
+    }), env);
+    assert.equal(privateList.status, 200);
+    assert.equal((await privateList.json()).items[0].title, "First video");
+
+    const privateVideo = await handleRequest(new Request("https://bridge.workers.dev/api/library/video/jNQXAC9IVRw", {
+      headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${session.token}` },
+    }), env);
+    assert.equal(privateVideo.status, 200);
+    assert.deepEqual((await privateVideo.json()).item.summaries, { concise: "A private summary." });
+
+    const privateKeywords = await handleRequest(new Request("https://bridge.workers.dev/api/library/keywords", {
+      headers: { Origin: env.PAGES_ORIGIN, Authorization: `Bearer ${session.token}` },
+    }), env);
+    assert.equal(privateKeywords.status, 200);
+    assert.deepEqual((await privateKeywords.json()).keywords, ["Ancient history", "History"]);
 
     const cancelResponse = await handleRequest(new Request(
       "https://bridge.workers.dev/api/cancel/0123456789abcdef0123456789abcdef",

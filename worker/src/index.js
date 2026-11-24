@@ -3,6 +3,7 @@ const GITHUB_API = "https://api.github.com";
 const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
 const SESSION_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 24 * 1024;
+const MAX_LIBRARY_RECORD_BYTES = 900 * 1024;
 const AUDIO_LANGUAGES = new Set(["en", "ar", "da", "de", "el", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh"]);
 const PROMPT_FILES = Object.freeze({
   concise: "prompts/concise.md",
@@ -54,7 +55,7 @@ export async function handleRequest(request, env) {
     return preflight(request, env);
   }
 
-  if ((url.pathname === "/api/prompts" || url.pathname === "/api/status" || url.pathname.startsWith("/api/status/")) && request.method === "OPTIONS") {
+  if ((url.pathname === "/api/prompts" || url.pathname === "/api/status" || url.pathname.startsWith("/api/status/") || url.pathname === "/api/library" || url.pathname === "/api/library/keywords" || url.pathname.startsWith("/api/library/video/")) && request.method === "OPTIONS") {
     return preflight(request, env);
   }
 
@@ -64,6 +65,22 @@ export async function handleRequest(request, env) {
 
   if (url.pathname === "/api/prompts" && request.method === "GET") {
     return getPrompts(request, env);
+  }
+
+  if (url.pathname === "/api/library" && request.method === "GET") {
+    return getLibrary(request, env);
+  }
+
+  if (url.pathname === "/api/library/keywords" && request.method === "GET") {
+    return getLibraryKeywords(request, env);
+  }
+
+  if (url.pathname.startsWith("/api/library/video/") && request.method === "GET") {
+    return getLibraryVideo(request, env, url.pathname.slice("/api/library/video/".length));
+  }
+
+  if (url.pathname === "/api/library/record" && request.method === "POST") {
+    return saveLibraryRecord(request, env);
   }
 
   if (url.pathname === "/api/status" && request.method === "GET") {
@@ -281,6 +298,11 @@ async function dispatchWorkflow(request, env) {
   const installationToken = await createInstallationToken(env);
   const progressToken = await createProgressToken(requestId, env);
   const cancelToken = await createRequestCancelToken(requestId, env);
+  const videoId = new URL(youtubeUrl).searchParams.get("v");
+  const archiveToken = await createArchiveWriteToken(requestId, videoId, env);
+  // Keep the workflow input and TextGenHub prompt bounded while still giving
+  // the agent a broad vocabulary of reusable dashboard tags.
+  const existingKeywords = (await listLibraryKeywords(env)).slice(0, 250);
   const repo = `${env.REPOSITORY_OWNER}/${env.REPOSITORY_NAME}`;
   const dispatchResponse = await fetch(`${GITHUB_API}/repos/${repo}/actions/workflows/${encodeURIComponent(env.WORKFLOW_FILE)}/dispatches`, {
     method: "POST",
@@ -291,9 +313,11 @@ async function dispatchWorkflow(request, env) {
         youtube_url: youtubeUrl,
         request_id: requestId,
         status_token: progressToken,
+        archive_token: archiveToken,
         summary_mode: mode,
         output_language: outputLanguage,
         summary_formats: formats.join(","),
+        existing_keywords: JSON.stringify(existingKeywords),
         prompt_overrides: JSON.stringify(promptOverrides),
       },
     }),
@@ -308,6 +332,8 @@ async function dispatchWorkflow(request, env) {
     request_id: requestId,
     status_token: statusReadToken,
     cancel_token: cancelToken,
+    // This token is scoped to this one private workflow. It is never returned
+    // to the browser; only the self-hosted runner receives it.
     actions_url: OWNER_ACTIONS_URL,
   }, 202, request, env);
 }
@@ -404,6 +430,162 @@ async function getPrompts(request, env) {
     prompts[name] = await readRepositoryText(path, token, env);
   }
   return jsonResponse({ ok: true, prompts }, 200, request, env);
+}
+
+async function getLibrary(request, env) {
+  if (!isAllowedPagesOrigin(request, env) || !(await hasOwnerSession(request, env))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  if (!env.SUMMARY_DB) return jsonResponse({ ok: false, error: "library_unavailable" }, 503, request, env);
+  const url = new URL(request.url);
+  const offset = Number(url.searchParams.get("offset") || "0");
+  const limit = Number(url.searchParams.get("limit") || "50");
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000 ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  const [rows, count] = await Promise.all([
+    env.SUMMARY_DB.prepare(
+      "SELECT video_id, title, video_url, summarized_at, output_language, keywords_json FROM summaries ORDER BY summarized_at DESC LIMIT ? OFFSET ?",
+    ).bind(limit, offset).all(),
+    env.SUMMARY_DB.prepare("SELECT COUNT(*) AS total FROM summaries").first(),
+  ]);
+  const items = (rows.results || []).map((row) => ({
+    video_id: row.video_id,
+    title: row.title,
+    url: row.video_url,
+    summarized_at: row.summarized_at,
+    output_language: row.output_language,
+    keywords: parseJsonArray(row.keywords_json),
+  }));
+  const total = Number(count?.total || 0);
+  return jsonResponse({ ok: true, items, total, next_offset: offset + items.length < total ? offset + items.length : null }, 200, request, env);
+}
+
+async function getLibraryKeywords(request, env) {
+  if (!isAllowedPagesOrigin(request, env) || !(await hasOwnerSession(request, env))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  try {
+    return jsonResponse({ ok: true, keywords: await listLibraryKeywords(env) }, 200, request, env);
+  } catch {
+    return jsonResponse({ ok: false, error: "library_unavailable" }, 503, request, env);
+  }
+}
+
+async function getLibraryVideo(request, env, videoId) {
+  if (!isAllowedPagesOrigin(request, env) || !(await hasOwnerSession(request, env))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  if (!env.SUMMARY_DB) return jsonResponse({ ok: false, error: "library_unavailable" }, 503, request, env);
+  const row = await env.SUMMARY_DB.prepare(
+    "SELECT video_id, title, video_url, summarized_at, output_language, summaries_json, keywords_json FROM summaries WHERE video_id = ?",
+  ).bind(videoId).first();
+  if (!row) return jsonResponse({ ok: false, error: "not_found" }, 404, request, env);
+  return jsonResponse({
+    ok: true,
+    item: {
+      video_id: row.video_id,
+      title: row.title,
+      url: row.video_url,
+      summarized_at: row.summarized_at,
+      output_language: row.output_language,
+      summaries: parseJsonObject(row.summaries_json),
+      keywords: parseJsonArray(row.keywords_json),
+    },
+  }, 200, request, env);
+}
+
+async function saveLibraryRecord(request, env) {
+  const authorization = request.headers.get("Authorization") || "";
+  const bearer = /^Bearer ([A-Za-z0-9_.-]{20,4096})$/.exec(authorization);
+  if (request.headers.has("Origin") || !bearer) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  let body;
+  try {
+    body = await readJsonLimited(request, MAX_LIBRARY_RECORD_BYTES);
+  } catch {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
+  if (!/^[a-f0-9]{32}$/.test(body.request_id || "") ||
+      !(await verifyArchiveWriteToken(bearer[1], body.request_id, body.video_id, env))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401, request, env);
+  }
+  if (!env.SUMMARY_DB) return jsonResponse({ ok: false, error: "library_unavailable" }, 503, request, env);
+
+  let canonicalUrl;
+  try {
+    canonicalUrl = canonicalizeYouTubeUrl(body.url);
+  } catch {
+    return jsonResponse({ ok: false, error: "invalid_record" }, 400, request, env);
+  }
+  const videoId = new URL(canonicalUrl).searchParams.get("v");
+  if (body.video_id !== videoId || typeof body.title !== "string" || !body.title.trim() || body.title.length > 1000 ||
+      typeof body.output_language !== "string" || !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(body.output_language) ||
+      !body.summaries || typeof body.summaries !== "object" || Array.isArray(body.summaries) ||
+      Object.keys(body.summaries).some((name) => !["concise", "detailed", "key_takeaways", "critical"].includes(name)) ||
+      typeof body.summaries.concise !== "string" || !body.summaries.concise.trim() ||
+      Object.values(body.summaries).some((summary) => typeof summary !== "string" || summary.length > 200_000) ||
+      !Array.isArray(body.keywords) || body.keywords.length > 3) {
+    return jsonResponse({ ok: false, error: "invalid_record" }, 400, request, env);
+  }
+  const keywordRecords = normalizeKeywords(body.keywords);
+  const keywords = keywordRecords.map((item) => item.keyword);
+  const now = new Date().toISOString();
+  const statements = [
+    env.SUMMARY_DB.prepare(
+      "INSERT INTO summaries (video_id, title, video_url, summarized_at, output_language, summaries_json, keywords_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(video_id) DO UPDATE SET title=excluded.title, video_url=excluded.video_url, summarized_at=excluded.summarized_at, output_language=excluded.output_language, summaries_json=excluded.summaries_json, keywords_json=excluded.keywords_json, updated_at=excluded.updated_at",
+    ).bind(videoId, body.title.trim(), canonicalUrl, now, body.output_language, JSON.stringify(body.summaries), JSON.stringify(keywords), now),
+    ...keywordRecords.map(({ keyword, normalized }) => env.SUMMARY_DB.prepare(
+      "INSERT OR IGNORE INTO library_keywords (normalized, keyword) VALUES (?, ?)",
+    ).bind(normalized, keyword)),
+  ];
+  await env.SUMMARY_DB.batch(statements);
+  return jsonResponse({ ok: true, video_id: videoId, keywords }, 201, request, env);
+}
+
+async function listLibraryKeywords(env) {
+  if (!env.SUMMARY_DB) throw new Error("library_unavailable");
+  const result = await env.SUMMARY_DB.prepare(
+    "SELECT keyword FROM library_keywords ORDER BY normalized",
+  ).all();
+  return (result.results || []).map((row) => row.keyword);
+}
+
+function normalizeKeywords(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const keyword = value.normalize("NFKC").trim().replace(/\s+/g, " ");
+    const normalized = keyword.toLocaleLowerCase("en-US");
+    if (!keyword || keyword.length > 60 || /[\r\n\u0000-\u001f]/.test(keyword) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push({ keyword, normalized });
+  }
+  return result.slice(0, 3);
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 async function readRepositoryText(path, token, env) {
@@ -579,6 +761,16 @@ async function createRequestCancelToken(requestId, env, now = Date.now()) {
   return `${encoded}.${encodeBase64Url(await signHmac(encoded, env.SESSION_SIGNING_SECRET))}`;
 }
 
+async function createArchiveWriteToken(requestId, videoId, env, now = Date.now()) {
+  const encoded = encodeBase64Url(encoder.encode(JSON.stringify({
+    exp: Math.floor(now / 1000) + 48 * 60 * 60,
+    request_id: requestId,
+    scope: "archive:write",
+    video_id: videoId,
+  })));
+  return `${encoded}.${encodeBase64Url(await signHmac(encoded, env.SESSION_SIGNING_SECRET))}`;
+}
+
 async function verifyStatusReadToken(token, requestId, env, now = Date.now()) {
   if (!isConfiguredValue(env.SESSION_SIGNING_SECRET)) return false;
   const parts = typeof token === "string" ? token.split(".") : [];
@@ -630,6 +822,25 @@ async function verifyProgressToken(token, requestId, env, now = Date.now()) {
     );
     const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
     return valid && payload.scope === "progress" && payload.request_id === requestId && Number.isInteger(payload.exp) && payload.exp > Math.floor(now / 1000);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyArchiveWriteToken(token, requestId, videoId, env, now = Date.now()) {
+  if (!isConfiguredValue(env.SESSION_SIGNING_SECRET)) return false;
+  const parts = typeof token === "string" ? token.split(".") : [];
+  if (parts.length !== 2) return false;
+  try {
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      await crypto.subtle.importKey("raw", encoder.encode(env.SESSION_SIGNING_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]),
+      decodeBase64Url(parts[1]),
+      encoder.encode(parts[0]),
+    );
+    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[0])));
+    return valid && payload.scope === "archive:write" && payload.request_id === requestId && payload.video_id === videoId &&
+      Number.isInteger(payload.exp) && payload.exp > Math.floor(now / 1000);
   } catch {
     return false;
   }
@@ -695,9 +906,9 @@ function isConfiguredValue(value) {
   return typeof value === "string" && value.trim().length > 0 && value !== "CONFIGURE_ME";
 }
 
-async function readJsonLimited(request) {
+async function readJsonLimited(request, maxBytes = MAX_BODY_BYTES) {
   const declaredLength = Number(request.headers.get("Content-Length") || "0");
-  if (declaredLength > MAX_BODY_BYTES) throw new Error("request_too_large");
+  if (declaredLength > maxBytes) throw new Error("request_too_large");
   if (!request.body) throw new Error("empty_request");
   const reader = request.body.getReader();
   const chunks = [];
@@ -706,7 +917,7 @@ async function readJsonLimited(request) {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_BODY_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel();
       throw new Error("request_too_large");
     }

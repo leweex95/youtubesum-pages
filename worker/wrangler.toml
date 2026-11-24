@@ -18,3 +18,9 @@ WORKFLOW_REF = "main"
 GITHUB_APP_ID = "5802997"
 GITHUB_APP_CLIENT_ID = "Iv23libhLaKXtwCihXPL"
 GITHUB_APP_INSTALLATION_ID = "182995971"
+
+[[d1_databases]]
+binding = "SUMMARY_DB"
+database_name = "youtubesum-library"
+database_id = "f335f863-31b4-4f56-afea-3a50d2504634"
+migrations_dir = "migrations"

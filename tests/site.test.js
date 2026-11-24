@@ -12,6 +12,8 @@ test("request page links to the public walkthrough and starts disabled", async (
   assert.match(html, /id="submit-request"[^>]*disabled/);
   assert.match(html, /id="summary-mode"/);
   assert.match(html, /id="output-language"[^>]*value="en"/);
+  assert.match(html, /id="library-tab"[^>]*disabled/);
+  assert.match(html, /id="library-view"[^>]*hidden/);
   assert.match(html, /id="prompt-editor"/);
   assert.match(html, /id="progress-panel"/);
   assert.match(html, /id="cancel-request"[^>]*hidden>Cancel request/);
@@ -29,8 +31,8 @@ test("request bridge is configured and owner submissions are enabled after end-t
 test("walkthrough explains the data boundary and practical limits", async () => {
   const html = await read("how-it-works.html");
   assert.match(html, /A server checks and tracks the request/);
-  assert.match(html, /the Pages host does not receive it/);
-  assert.match(html, /does not display transcripts, summaries, or job logs/);
+  assert.match(html, /Worker returns saved summaries only after verifying the owner's sign-in/);
+  assert.match(html, /private D1 database/);
   assert.match(html, /regular code with explicit tests/);
   assert.match(html, /not a durable job service/);
 });

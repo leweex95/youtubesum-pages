@@ -45,16 +45,16 @@
         <section class="walk-section" aria-labelledby="boundaries-title">
           <div class="walk-heading"><span class="walk-index">02</span><div><h2 id="boundaries-title">Where data goes</h2><p>The public page is not where the video is processed.</p></div></div>
           <div class="boundary-grid">
-            <div><span class="boundary-label">Public website</span><p>Hosts the form and sign-in flow. The browser sends the link directly to the Worker; the Pages host does not receive it. The public site does not display transcripts, summaries, or job logs.</p></div>
-            <div><span class="boundary-label">Private runner</span><p>Runs the Python app and keeps transcripts, summaries, audio, and checkpoints in its configured workspace. Subtitle text is sent to ChatGPT for summarization.</p></div>
-            <div><span class="boundary-label">Other services</span><p>YouTube supplies captions. The optional narration provider receives the selected summary text. SMTP delivers the finished files to the configured inbox.</p></div>
+            <div><span class="boundary-label">Public website</span><p>Hosts the static form and interface. Archive data is not included in public files; the Worker returns saved summaries only after verifying the owner's sign-in. Transcripts and job logs are not shown.</p></div>
+            <div><span class="boundary-label">Private runner and archive</span><p>The runner processes transcripts and sends generated summaries, titles, and keywords to a private D1 database. Archive reads are owner-authenticated; transcripts, audio, and checkpoints are not uploaded to the library.</p></div>
+            <div><span class="boundary-label">Other services</span><p>YouTube supplies captions. TextGenHub receives the transcript for summarization and suggests up to three keywords using the existing private keyword vocabulary. The optional narration provider receives summary text; SMTP delivers the finished files to the configured inbox.</p></div>
           </div>
         </section>
 
         <section class="walk-section" aria-labelledby="design-title">
           <div class="walk-heading"><span class="walk-index">03</span><div><h2 id="design-title">Engineering choices</h2><p>These choices make the workflow easier to check, recover, and change.</p></div></div>
           <div class="design-grid">
-            <div><h3>Narrow request boundary</h3><p>The bridge accepts one validated video URL and can trigger or cancel only the intended private workflow. A request-scoped cancellation token cannot control another run. It does not return private output to the browser.</p></div>
+            <div><h3>Narrow request boundary</h3><p>The bridge accepts one validated video URL and can trigger or cancel only the intended private workflow. A request-scoped cancellation token cannot control another run. Progress endpoints do not expose output; saved summaries require the owner's authenticated library session.</p></div>
             <div><h3>Keep work resumable</h3><p>Successful processing stages are checkpointed. On a retry, the app checks that inputs, settings, and saved files still match before reusing results.</p></div>
             <div><h3>Make services replaceable</h3><p>YouTube, text generation, narration, and email are separated behind small interfaces. Most tests use fakes, not live accounts or paid services.</p></div>
             <div><h3>Separate AI from control logic</h3><p>AI writes the summaries. Link validation, file handling, checkpoints, retries, and email rules are regular code with explicit tests.</p></div>
@@ -69,7 +69,7 @@
             <li>The Windows PC and its self-hosted runner must be online. GitHub’s queue is temporary; this is not a durable job service.</li>
             <li>Captions may be missing or inaccurate. ChatGPT browser automation can break when login, usage limits, or the website changes.</li>
             <li>Email and narration depend on configured services. If the runner is offline or a provider fails, the request may not finish.</li>
-            <li>The request form stays disabled until the complete sign-in-to-email flow has been verified.</li>
+            <li>Request controls and the knowledge bank remain unavailable until the owner signs in.</li>
           </ul>
         </section>
 
