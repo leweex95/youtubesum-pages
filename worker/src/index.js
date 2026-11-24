@@ -3,6 +3,7 @@ const GITHUB_API = "https://api.github.com";
 const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
 const SESSION_SECONDS = 10 * 60;
 const MAX_BODY_BYTES = 24 * 1024;
+const AUDIO_LANGUAGES = new Set(["en", "ar", "da", "de", "el", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh"]);
 const PROMPT_FILES = Object.freeze({
   concise: "prompts/concise.md",
   detailed: "prompts/detailed.md",
@@ -255,6 +256,12 @@ async function dispatchWorkflow(request, env) {
   if (!["auto", "single", "chunked"].includes(mode)) {
     return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
   }
+  const outputLanguage = body.output_language ?? "en";
+  if (typeof outputLanguage !== "string" || outputLanguage.length > 35 ||
+      !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(outputLanguage) ||
+      !AUDIO_LANGUAGES.has(outputLanguage.split("-")[0].toLowerCase())) {
+    return jsonResponse({ ok: false, error: "invalid_request" }, 400, request, env);
+  }
   const formats = body.formats ?? ["concise"];
   if (!Array.isArray(formats) || !formats.length || formats.length > 4 ||
       formats.some((name) => typeof name !== "string" || name.startsWith("system:") || !Object.hasOwn(PROMPT_FILES, name)) ||
@@ -285,6 +292,7 @@ async function dispatchWorkflow(request, env) {
         request_id: requestId,
         status_token: progressToken,
         summary_mode: mode,
+        output_language: outputLanguage,
         summary_formats: formats.join(","),
         prompt_overrides: JSON.stringify(promptOverrides),
       },

@@ -58,6 +58,9 @@
                 <option value="chunked">Chunked, then synthesized</option>
               </select>
               <p class="option-help">Automatic chooses based on transcript length. Single-pass uses one request; chunked summarizes sections and combines them.</p>
+              <label for="output-language">Summary language</label>
+              <input id="output-language" name="output_language" type="text" value="en" maxlength="35" pattern="[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*" autocomplete="off" required disabled aria-describedby="language-help">
+              <p id="language-help" class="option-help">Use a code such as <code>en</code> or <code>pt-BR</code>. MP3 email delivery supports: en, ar, da, de, el, es, fi, fr, he, hi, it, ja, ko, ms, nl, no, pl, pt, ru, sv, sw, tr, zh.</p>
               <fieldset id="summary-formats" disabled>
                 <legend>Summary formats</legend>
                 <label><input type="checkbox" name="format" value="concise" checked> Concise <span>MP3 narration</span></label>

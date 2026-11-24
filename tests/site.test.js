@@ -11,6 +11,7 @@ test("request page links to the public walkthrough and starts disabled", async (
   assert.match(html, /id="video-url"[^>]*disabled/);
   assert.match(html, /id="submit-request"[^>]*disabled/);
   assert.match(html, /id="summary-mode"/);
+  assert.match(html, /id="output-language"[^>]*value="en"/);
   assert.match(html, /id="prompt-editor"/);
   assert.match(html, /id="progress-panel"/);
   assert.match(html, /id="cancel-request"[^>]*hidden>Cancel request/);
@@ -32,4 +33,12 @@ test("walkthrough explains the data boundary and practical limits", async () => 
   assert.match(html, /does not display transcripts, summaries, or job logs/);
   assert.match(html, /regular code with explicit tests/);
   assert.match(html, /not a durable job service/);
+});
+
+test("Pages deploys main automatically and allows manual feature previews only", async () => {
+  const workflow = await read(".github/workflows/pages.yml");
+  assert.match(workflow, /push:\s*\n\s*branches: \[main\]/);
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(workflow, /refs\/heads\/feature\//);
 });

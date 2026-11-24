@@ -4,7 +4,7 @@ Public GitHub Pages landing page for the private YouTube summarizer. The site is
 
 ## Deploy with GitHub Pages
 
-The `Deploy GitHub Pages` workflow publishes the site from the `main` branch. In repository settings, set **Pages → Build and deployment → Source** to **GitHub Actions**. The first deployment runs on push to `main`.
+The `Deploy GitHub Pages` workflow publishes the site automatically from `main`. It can also be run manually from a `feature/*` branch for debugging. GitHub Pages has one public URL, so a feature deployment replaces the currently displayed site until the next deployment. Manual deployments from `main` and other branches are blocked. In repository settings, set **Pages → Build and deployment → Source** to **GitHub Actions**.
 
 ## Request flow
 

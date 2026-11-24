@@ -264,6 +264,9 @@ test("owner dispatch rejects unsupported modes, formats, and prompt overrides", 
   const session = await createSessionToken("leweex95", "74991597", env);
   for (const body of [
     { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", mode: "untrusted" },
+    { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", output_language: "en; malicious" },
+    { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", output_language: "x".repeat(36) },
+    { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", output_language: "hu" },
     { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", formats: ["detailed"] },
     { youtube_url: "https://youtu.be/jNQXAC9IVRw", request_id: "0123456789abcdef0123456789abcdef", prompt_overrides: { concise: "missing placeholders" } },
   ]) {
@@ -346,6 +349,7 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
         youtube_url: "https://youtu.be/jNQXAC9IVRw?si=private-tracker",
         request_id: "0123456789abcdef0123456789abcdef",
         mode: "chunked",
+        output_language: "en-US",
         formats: ["concise", "detailed"],
         prompt_overrides: { concise: "Summary in {output_language}: {transcript}" },
       }),
@@ -373,6 +377,7 @@ test("owner dispatch uses a short-lived session and a narrowly scoped installati
     assert.equal(dispatch.inputs.request_id, "0123456789abcdef0123456789abcdef");
     assert.match(dispatch.inputs.status_token, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     assert.equal(dispatch.inputs.summary_mode, "chunked");
+    assert.equal(dispatch.inputs.output_language, "en-US");
     assert.equal(dispatch.inputs.summary_formats, "concise,detailed");
     assert.deepEqual(JSON.parse(dispatch.inputs.prompt_overrides), {
       concise: "Summary in {output_language}: {transcript}",

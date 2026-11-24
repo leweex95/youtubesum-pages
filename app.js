@@ -6,6 +6,7 @@
   const BRIDGE_URL = "https://youtubesum-submit.csibi-levente14.workers.dev";
   const SUBMISSIONS_ENABLED = true;
   const OWNER_ACTIONS_URL = "https://github.com/leweex95/youtubesum/actions/workflows/summarize.yml";
+  const AUDIO_LANGUAGES = new Set(["en", "ar", "da", "de", "el", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh"]);
 
   const form = document.getElementById("request-form");
   const input = document.getElementById("video-url");
@@ -15,6 +16,7 @@
   const note = document.getElementById("setup-note");
   const badge = document.getElementById("bridge-badge");
   const modeSelect = document.getElementById("summary-mode");
+  const languageInput = document.getElementById("output-language");
   const formats = document.getElementById("summary-formats");
   const promptEditor = document.getElementById("prompt-editor");
   const promptList = document.getElementById("prompt-list");
@@ -68,6 +70,7 @@
     signOutButton.hidden = false;
     input.disabled = !SUBMISSIONS_ENABLED;
     modeSelect.disabled = !SUBMISSIONS_ENABLED;
+    languageInput.disabled = !SUBMISSIONS_ENABLED;
     formats.disabled = !SUBMISSIONS_ENABLED;
     submitButton.disabled = !SUBMISSIONS_ENABLED || busy || trackingJob;
     setBadge("OWNER SIGNED IN", "ready");
@@ -85,6 +88,7 @@
     signOutButton.hidden = true;
     input.disabled = true;
     modeSelect.disabled = true;
+    languageInput.disabled = true;
     formats.disabled = true;
     submitButton.disabled = true;
     promptTemplates = {};
@@ -190,6 +194,7 @@
     const paused = !SUBMISSIONS_ENABLED;
     input.disabled = paused || disabled || !sessionToken;
     modeSelect.disabled = paused || disabled || !sessionToken;
+    languageInput.disabled = paused || disabled || !sessionToken;
     formats.disabled = paused || disabled || !sessionToken;
     submitButton.disabled = paused || disabled || busy || trackingJob || !sessionToken;
     for (const textarea of promptList.querySelectorAll("textarea")) textarea.disabled = disabled || !sessionToken;
@@ -352,6 +357,11 @@
   }
 
   function submissionOptions() {
+    const outputLanguage = languageInput.value.trim();
+    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(outputLanguage) ||
+        !AUDIO_LANGUAGES.has(outputLanguage.split("-")[0].toLowerCase())) {
+      throw new Error("Enter a valid language code supported by MP3 narration; see the language list below the field.");
+    }
     const selectedFormats = Array.from(formats.querySelectorAll('input[name="format"]:checked')).map((item) => item.value);
     if (!selectedFormats.includes("concise")) throw new Error("Keep Concise selected because MP3 narration uses that format.");
     const promptOverrides = {};
@@ -362,7 +372,7 @@
         promptOverrides[name] = textarea.value;
       }
     }
-    return { mode: modeSelect.value, formats: selectedFormats, prompt_overrides: promptOverrides };
+    return { mode: modeSelect.value, output_language: outputLanguage, formats: selectedFormats, prompt_overrides: promptOverrides };
   }
 
   function consumeAuthHandoff() {
@@ -484,6 +494,7 @@
   if (!bridgeOrigin) {
     signInButton.disabled = true;
     input.disabled = true;
+    languageInput.disabled = true;
     submitButton.disabled = true;
     setBadge("SUBMISSIONS PAUSED");
     setMessage("Sign-in is available for verification. Submissions are paused until the private processing and email flow passes an end-to-end check.");
